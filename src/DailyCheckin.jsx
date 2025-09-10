@@ -36,23 +36,40 @@ const compareByFixedWindow = (a, b) => {
   const sb = (b.fixedWindow || "23:59-23:59").split("-")[0];
   return timeToNum(sa) - timeToNum(sb);
 };
+const spanMinutes = (win) => {
+  if(!win) return 25;
+  const [s, e] = win.split("-");
+  return Math.max(5, timeToNum(e) - timeToNum(s));
+};
 
-/* ------------------ 固定任务模板（可按需改） ------------------ */
+/* ------------------ 固定任务模板（按你的表） ------------------ */
+/*
+| 时间段         | 模块     | 任务                         | 产出            |
+| 9:00–9:50   | 核心产出 | 写公众号草稿500字           | 500字草稿      |
+| 10:00–10:25 | 核心产出 | 改稿+排版                   | 可发布文章      |
+| 10:30–10:55 | 热点捕捉 | 浏览热榜，记录3条热点        | 热点清单        |
+| 11:00–11:15 | 爆款拆解 | 拆解1个爆款标题/开头        | 拆解笔记        |
+| 11:15–11:30 | 对标学习 | 对比1个账号选题（隔日）       | 对标表         |
+| 11:30–12:00 | 股票     | 查盘+写下1条操作逻辑         | 投资日志        |
+| 14:00–14:30 | 学习升级 | Coze/AI 短视频：做1个小案例 | 工作流/短视频demo |
+| 14:30–15:00 | 输入     | 阅读10页+写3条灵感          | 灵感清单        |
+| 15:00–15:30 | 扩展产出 | 剪辑1条短视频（视频号/小红书） | 成片30秒        |
+| 15:30–15:45 | 微博维护 | 发1条+互动5条评论            | 微博动态        |
+*/
 const DEFAULT_TASKS = [
-  { title: "晨间准备：计划+环境布置", minutes: 10, section: "准备",       fixedWindow: "08:50-09:00" },
-  { title: "核心产出：公众号开头200字", minutes: 25, section: "核心产出", fixedWindow: "09:00-09:25" },
-  { title: "股票：早盘观察+操作记录",   minutes: 30, section: "股票（早盘）", fixedWindow: "09:30-10:00" },
-  { title: "核心产出：补完300字+润色", minutes: 50, section: "核心产出", fixedWindow: "10:00-10:50" },
-  { title: "热点研究：3条热点+拆1爆款", minutes: 25, section: "热点研究", fixedWindow: "11:00-11:25" },
-  { title: "深度阅读：项目文档 5–10 页", minutes: 25, section: "深度阅读", fixedWindow: "11:30-11:55" },
-  { title: "实验尝试：AI短视频/新工具demo", minutes: 30, section: "实验尝试", fixedWindow: "14:00-14:30" },
-  { title: "学习升级：Coze/AI流程",     minutes: 30, section: "学习升级", fixedWindow: "14:30-15:00" },
-  { title: "股票：收盘复盘+记录",       minutes: 15, section: "股票（收盘）", fixedWindow: "15:00-15:15" },
-  { title: "扩展产出：剪30秒短视频",     minutes: 30, section: "扩展产出", fixedWindow: "15:15-15:45" },
-  { title: "灵感输入：阅读10页+3条灵感", minutes: 30, section: "灵感输入", fixedWindow: "15:45-16:15" },
+  { fixedWindow: "09:00-09:50", section: "核心产出", title: "写公众号草稿500字",          output: "500字草稿" },
+  { fixedWindow: "10:00-10:25", section: "核心产出", title: "改稿+排版",                  output: "可发布文章" },
+  { fixedWindow: "10:30-10:55", section: "热点捕捉", title: "浏览热榜，记录3条热点",       output: "热点清单" },
+  { fixedWindow: "11:00-11:15", section: "爆款拆解", title: "拆解1个爆款标题/开头",       output: "拆解笔记" },
+  { fixedWindow: "11:15-11:30", section: "对标学习", title: "对比1个账号选题（隔日）",     output: "对标表", altDays: true }, // 隔日显示
+  { fixedWindow: "11:30-12:00", section: "股票",     title: "查盘+写下1条操作逻辑",        output: "投资日志" },
+  { fixedWindow: "14:00-14:30", section: "学习升级", title: "Coze/AI 短视频：做1个小案例", output: "工作流/短视频demo" },
+  { fixedWindow: "14:30-15:00", section: "输入",     title: "阅读10页+写3条灵感",          output: "灵感清单" },
+  { fixedWindow: "15:00-15:30", section: "扩展产出", title: "剪辑1条短视频（视频号/小红书）", output: "成片30秒" },
+  { fixedWindow: "15:30-15:45", section: "微博维护", title: "发1条+互动5条评论",           output: "微博动态" },
 ];
 
-/* ------------------ 番茄钟 ------------------ */
+/* ------------------ 番茄钟（可与任意任务绑定） ------------------ */
 function Pomodoro({ tasks, onAutoComplete }) {
   const MODES = { "25/5": { focus:1500, rest:300 }, "50/10": { focus:3000, rest:600 } };
   const [mode, setMode] = useState("25/5");
@@ -143,19 +160,29 @@ function InnerApp(){
   const normalizeTask = (t) => ({
     id: t.id ?? uid(),
     title: String(t.title ?? "未命名任务"),
-    minutes: Number.isFinite(+t.minutes) && +t.minutes > 0 ? +t.minutes : 25,
+    minutes: Number.isFinite(+t.minutes) && +t.minutes > 0 ? +t.minutes : spanMinutes(t.fixedWindow),
     section: t.section ?? "",
     done: !!t.done,
     remark: t.remark ?? "",
-    fixedWindow: t.fixedWindow ?? "", // ✅ 固定时间段
+    fixedWindow: t.fixedWindow ?? "",
+    output: t.output ?? "",
+    altDays: !!t.altDays,
   });
+
+  // “隔日任务”规则：偶数日才显示（你可以改为奇数）
+  const shouldShowToday = (task, d) => {
+    if (!task.altDays) return true;
+    const day = d.getDate();
+    return day % 2 === 0; // 偶数日显示；改为 day % 2 === 1 即奇数日显示
+  };
 
   useEffect(() => {
     const raw = localStorage.getItem(storageKey);
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
-        setTasks(Array.isArray(parsed?.tasks) ? parsed.tasks.map(normalizeTask) : DEFAULT_TASKS.map(normalizeTask));
+        const base = Array.isArray(parsed?.tasks) ? parsed.tasks : DEFAULT_TASKS;
+        setTasks(base.map(normalizeTask));
         setNotes(typeof parsed?.notes === "string" ? parsed.notes : "");
         return;
       } catch (e) { console.warn("Parse local data failed:", e); }
@@ -170,13 +197,15 @@ function InnerApp(){
     } catch (e) { console.warn("Save local data failed:", e); }
   }, [tasks, notes, storageKey]);
 
-  const doneCount = tasks.filter(t=>t.done).length;
-  const prog = tasks.length ? Math.round(doneCount*100/tasks.length) : 0;
+  const visibleTasks = [...tasks].filter(t => shouldShowToday(t, today)).sort(compareByFixedWindow);
+
+  const doneCount = visibleTasks.filter(t=>t.done).length;
+  const prog = visibleTasks.length ? Math.round(doneCount*100/visibleTasks.length) : 0;
 
   // 行为
   const toggleTask   = (id) => setTasks(arr => arr.map(t => t.id===id ? {...t, done:!t.done} : t));
   const autoComplete = (id) => setTasks(arr => arr.map(t => t.id===id ? {...t, done:true} : t));
-  const addTask      = () => setTasks(arr => [...arr, normalizeTask({ title:"自定义任务", minutes:25, section:"核心产出", done:false, remark:"", fixedWindow:"" })]);
+  const addTask      = () => setTasks(arr => [...arr, normalizeTask({ title:"自定义任务", section:"核心产出", fixedWindow:"", output:"", done:false, remark:"" })]);
   const removeTask   = (id) => setTasks(arr => arr.filter(t => t.id!==id));
   const updateTask   = (id, patch) => setTasks(arr => arr.map(t => t.id===id ? normalizeTask({ ...t, ...patch }) : t));
 
@@ -201,13 +230,13 @@ function InnerApp(){
       <div style={card}>
         <div style={{ display:"flex", justifyContent:"space-between" }}>
           <div>今日进度</div>
-          <div>{doneCount}/{tasks.length}（{prog}%）</div>
+          <div>{doneCount}/{visibleTasks.length}（{prog}%）</div>
         </div>
         <div style={barWrap}><div style={{ ...barFill, width: `${prog}%` }} /></div>
       </div>
 
       {/* 番茄钟 */}
-      <Pomodoro tasks={tasks} onAutoComplete={autoComplete} />
+      <Pomodoro tasks={visibleTasks} onAutoComplete={autoComplete} />
 
       {/* 任务清单（按时间段排序展示） */}
       <div style={card}>
@@ -217,7 +246,7 @@ function InnerApp(){
         </div>
 
         <div style={{ marginTop: 12 }}>
-          {[...tasks].sort(compareByFixedWindow).map((t) => (
+          {visibleTasks.map((t) => (
             <div key={t.id} style={taskRow}>
               <label style={{ display:"flex", alignItems:"center", gap: 8, flex: 1 }}>
                 <input type="checkbox" checked={!!t.done} onChange={() => toggleTask(t.id)} />
@@ -227,46 +256,43 @@ function InnerApp(){
                   onChange={(e) => updateTask(t.id, { title: e.target.value })}
                   placeholder="任务标题"
                   disabled={locked}
+                  title="任务"
                 />
               </label>
 
               <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginTop:6 }}>
-                <input
-                  style={{ ...numInput, width: 90 }}
-                  type="number"
-                  min={5}
-                  step={5}
-                  value={Number.isFinite(+t.minutes) ? +t.minutes : 25}
-                  onChange={(e) => updateTask(t.id, { minutes: +e.target.value })}
-                  title="预计分钟数"
-                  disabled={locked}
-                />
-
                 <select
                   value={String(t.section ?? "")}
                   onChange={(e) => updateTask(t.id, { section: e.target.value })}
                   style={select}
-                  title="类别"
+                  title="模块"
                   disabled={locked}
                 >
-                  <option value="">未分类</option>
-                  <option>准备</option>
                   <option>核心产出</option>
-                  <option>扩展产出</option>
-                  <option>热点研究</option>
-                  <option>深度阅读</option>
-                  <option>实验尝试</option>
+                  <option>热点捕捉</option>
+                  <option>爆款拆解</option>
+                  <option>对标学习</option>
+                  <option>股票</option>
                   <option>学习升级</option>
-                  <option>股票（早盘）</option>
-                  <option>股票（收盘）</option>
-                  <option>灵感输入</option>
+                  <option>输入</option>
+                  <option>扩展产出</option>
+                  <option>微博维护</option>
                 </select>
 
                 {t.fixedWindow && (
                   <div style={{ fontSize: 12, color: "#666" }}>
-                    ⏰ {t.fixedWindow} ・ 预计 {t.minutes} 分钟
+                    ⏰ {t.fixedWindow} ・ 预计 {spanMinutes(t.fixedWindow)} 分钟
                   </div>
                 )}
+
+                <input
+                  style={{ ...textInput, maxWidth: 260 }}
+                  value={t.output ?? ""}
+                  onChange={(e) => updateTask(t.id, { output: e.target.value })}
+                  placeholder="产出（如：500字草稿 / 成片30秒）"
+                  disabled={locked}
+                  title="产出"
+                />
 
                 {!locked && <button style={btnDanger} onClick={() => removeTask(t.id)}>删除</button>}
               </div>
@@ -276,6 +302,7 @@ function InnerApp(){
                 style={textarea}
                 value={t.remark ?? ""}
                 onChange={(e) => updateTask(t.id, { remark: e.target.value })}
+                title="备注"
               />
             </div>
           ))}
@@ -294,7 +321,7 @@ function InnerApp(){
       </div>
 
       <footer style={{ fontSize: 12, color: "#999", textAlign: "center", margin: "24px 0" }}>
-        本地自动保存（localStorage，按日期区分）。锁定模式下仅可勾选与写备注；如需调整清单，请“解锁编辑”。
+        本地自动保存（localStorage，按日期区分）。锁定模式下仅可勾选与写备注；如需调整清单，请“解锁编辑”。对标学习为隔日任务（偶数日显示）。
       </footer>
     </div>
   );
@@ -310,7 +337,6 @@ const btn = { padding:"8px 12px", border:"1px solid #e5e7eb", background:"#fff",
 const btnPrimary = { ...btn, background:"#111", color:"#fff", borderColor:"#111" };
 const btnDanger = { ...btn, borderColor:"#ef4444", color:"#ef4444", background:"#fff" };
 const textInput = { flex:1, padding:"8px 10px", borderRadius:8, border:"1px solid #e5e7eb", outline:"none" };
-const numInput = { ...textInput, textAlign:"right" };
 const select = { padding:"8px 10px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff" };
 const textarea = { width:"100%", marginTop:8, padding:10, border:"1px solid #e5e7eb", borderRadius:8, minHeight:64, outline:"none", resize:"vertical" };
 const taskRow = {
