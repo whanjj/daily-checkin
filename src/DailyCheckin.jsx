@@ -1,189 +1,155 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-// ===== 工具函数 =====
+/* ------------------ 错误边界：防止整页白屏 ------------------ */
+class ErrorBoundary extends React.Component {
+  constructor(props){ super(props); this.state = { hasError:false, error:null }; }
+  static getDerivedStateFromError(error){ return { hasError:true, error }; }
+  componentDidCatch(error, info){ console.error("UI Crash:", error, info); }
+  render(){
+    if(this.state.hasError){
+      return (
+        <div style={{padding:20, fontFamily:"sans-serif"}}>
+          <h2>😵 页面出错了，但我没让它白屏</h2>
+          <div style={{whiteSpace:"pre-wrap", color:"#b91c1c", background:"#fee2e2", padding:12, borderRadius:8, border:"1px solid #fecaca"}}>
+            {String(this.state.error)}
+          </div>
+          <p style={{color:"#666"}}>你可以继续操作或刷新页面；把上面的红字发我，我来定位。</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/* ------------------ 小工具 ------------------ */
 const pad = (n) => (n < 10 ? `0${n}` : `${n}`);
 const dateKey = (d = new Date()) =>
   `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-// ===== 预置任务（可改） =====
+/* ------------------ 预置任务 ------------------ */
 const DEFAULT_TASKS = [
   { title: "核心产出：写公众号开头200字", minutes: 25, section: "核心产出" },
-  { title: "股票：9:30 早盘观察+操作", minutes: 30, section: "股票（早盘）" },
-  { title: "核心产出：完善剩余300字", minutes: 50, section: "核心产出" },
-  { title: "热点研究：找3条热点+拆1个爆款", minutes: 25, section: "热点研究" },
-  { title: "深度阅读：项目文章 5–10 页 + 2 条笔记", minutes: 25, section: "深度阅读" },
-  { title: "实验尝试：AI 短视频/工具 demo", minutes: 30, section: "实验尝试" },
-  { title: "学习升级：Coze 工作流 / AI 技能", minutes: 30, section: "学习升级" },
-  { title: "股票：15:00 收盘复盘+记录", minutes: 15, section: "股票（收盘）" },
-  { title: "扩展产出：剪 30s 短视频 1 条", minutes: 30, section: "扩展产出" },
-  { title: "灵感输入：阅读 10 页 + 3 条灵感", minutes: 30, section: "灵感输入" },
+  { title: "股票：9:30 早盘观察+操作",      minutes: 30, section: "股票（早盘）" },
+  { title: "核心产出：完善剩余300字",        minutes: 50, section: "核心产出" },
+  { title: "热点研究：3条热点+拆1爆款",      minutes: 25, section: "热点研究" },
+  { title: "深度阅读：5–10页+2条笔记",       minutes: 25, section: "深度阅读" },
 ];
 
-// ===== 番茄钟组件 =====
+/* ------------------ 番茄钟 ------------------ */
 function Pomodoro({ tasks, onAutoComplete }) {
-  // 模式：25/5 或 50/10
-  const MODES = {
-    "25/5": { focus: 25 * 60, rest: 5 * 60 },
-    "50/10": { focus: 50 * 60, rest: 10 * 60 },
-  };
+  const MODES = { "25/5": { focus:1500, rest:300 }, "50/10": { focus:3000, rest:600 } };
   const [mode, setMode] = useState("25/5");
-  const [phase, setPhase] = useState("focus"); // focus 或 rest
+  const [phase, setPhase] = useState("focus");
   const [secondsLeft, setSecondsLeft] = useState(MODES[mode].focus);
   const [running, setRunning] = useState(false);
-  const [bindTaskId, setBindTaskId] = useState(tasks[0]?.id || null);
+  const [bindTaskId, setBindTaskId] = useState(tasks[0]?.id ?? "");
 
-  const tickRef = useRef(null);
+  useEffect(() => { setSecondsLeft(phase === "focus" ? MODES[mode].focus : MODES[mode].rest); }, [mode]);
 
-  // 模式切换
-  useEffect(() => {
-    const next = phase === "focus" ? MODES[mode].focus : MODES[mode].rest;
-    setSecondsLeft(next);
-  }, [mode]);
-
-  // 计时器
   useEffect(() => {
     if (!running) return;
-    tickRef.current = setInterval(() => {
+    const timer = setInterval(() => {
       setSecondsLeft((s) => {
         if (s <= 1) {
-          clearInterval(tickRef.current);
-          // 一个阶段结束
-          if (phase === "focus") {
-            // 专注阶段完成：如果绑定了任务，自动打勾
-            if (bindTaskId) onAutoComplete(bindTaskId);
-            setPhase("rest");
-            setSecondsLeft(MODES[mode].rest);
-            setRunning(false);
-          } else {
-            setPhase("focus");
-            setSecondsLeft(MODES[mode].focus);
-            setRunning(false);
-          }
+          clearInterval(timer);
+          if (phase === "focus" && bindTaskId) onAutoComplete?.(bindTaskId);
+          const nextPhase = phase === "focus" ? "rest" : "focus";
+          setPhase(nextPhase);
+          setRunning(false);
           return 0;
         }
         return s - 1;
       });
     }, 1000);
-    return () => clearInterval(tickRef.current);
+    return () => clearInterval(timer);
   }, [running, phase, mode, bindTaskId, onAutoComplete]);
 
-  const mm = String(Math.floor(secondsLeft / 60)).padStart(2, "0");
-  const ss = String(secondsLeft % 60).padStart(2, "0");
-
-  const start = () => setRunning(true);
-  const pause = () => setRunning(false);
-  const reset = () => {
-    setRunning(false);
-    setPhase("focus");
-    setSecondsLeft(MODES[mode].focus);
-  };
+  const mm = String(Math.floor(secondsLeft/60)).padStart(2,"0");
+  const ss = String(secondsLeft%60).padStart(2,"0");
 
   return (
     <div style={card}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h3 style={{ margin: 0 }}>⏱️ 番茄钟</h3>
-        <select value={mode} onChange={(e) => setMode(e.target.value)} style={select}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <h3 style={{margin:0}}>⏱️ 番茄钟</h3>
+        <select value={mode} onChange={(e)=>setMode(e.target.value)} style={select}>
           <option value="25/5">25/5</option>
           <option value="50/10">50/10</option>
         </select>
       </div>
-
-      <div style={{ marginTop: 8, color: "#666" }}>
-        当前阶段：{phase === "focus" ? "专注" : "休息"}
-      </div>
-
-      <div style={{ fontSize: 48, fontWeight: 700, margin: "12px 0" }}>
-        {mm}:{ss}
-      </div>
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {!running ? (
-          <button style={btnPrimary} onClick={start}>开始</button>
-        ) : (
-          <button style={btn} onClick={pause}>暂停</button>
-        )}
-        <button style={btn} onClick={reset}>重置</button>
-
-        <select
-          value={bindTaskId ?? ""}
-          onChange={(e) => setBindTaskId(e.target.value || null)}
-          style={{ ...select, minWidth: 220 }}
-        >
+      <div style={{marginTop:8,color:"#666"}}>当前阶段：{phase==="focus"?"专注":"休息"}</div>
+      <div style={{fontSize:48,fontWeight:700,margin:"12px 0"}}>{mm}:{ss}</div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        {!running ? <button style={btnPrimary} onClick={()=>setRunning(true)}>开始</button>
+                  : <button style={btn} onClick={()=>setRunning(false)}>暂停</button>}
+        <button style={btn} onClick={()=>{
+          setRunning(false); setPhase("focus"); setSecondsLeft(MODES[mode].focus);
+        }}>重置</button>
+        <select value={bindTaskId} onChange={(e)=>setBindTaskId(e.target.value)} style={{...select,minWidth:220}}>
           <option value="">不绑定任务</option>
-          {tasks.map((t) => (
-            <option key={t.id} value={t.id}>
-              绑定：{t.title.slice(0, 24)}
-            </option>
-          ))}
+          {tasks.map(t => <option key={t.id} value={t.id}>绑定：{(t.title||"").slice(0,24)}</option>)}
         </select>
       </div>
-
-      <div style={{ fontSize: 12, color: "#999", marginTop: 8 }}>
-        专注阶段结束时，若绑定了任务，会自动将该任务勾选为完成。
-      </div>
+      <div style={{fontSize:12,color:"#999",marginTop:8}}>专注结束时，若绑定任务，会自动勾选为完成。</div>
     </div>
   );
 }
 
-// ===== 主组件 =====
+/* ------------------ 主组件 ------------------ */
 export default function DailyCheckin() {
+  return (
+    <ErrorBoundary>
+      <InnerApp />
+    </ErrorBoundary>
+  );
+}
+
+function InnerApp(){
   const [today, setToday] = useState(() => new Date());
   const storageKey = useMemo(() => `dc-${dateKey(today)}`, [today]);
-
   const [tasks, setTasks] = useState([]);
   const [notes, setNotes] = useState("");
 
-  // 加载当日数据
+  // 安全初始化：保证字段齐全，避免 undefined
+  const normalizeTask = (t) => ({
+    id: t.id ?? uid(),
+    title: String(t.title ?? "未命名任务"),
+    minutes: Number.isFinite(+t.minutes) && +t.minutes > 0 ? +t.minutes : 25,
+    section: t.section ?? "",
+    done: !!t.done,
+    remark: t.remark ?? "",
+  });
+
   useEffect(() => {
     const raw = localStorage.getItem(storageKey);
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
-        if (parsed?.tasks) setTasks(parsed.tasks);
-        if (typeof parsed?.notes === "string") setNotes(parsed.notes);
+        setTasks(Array.isArray(parsed?.tasks) ? parsed.tasks.map(normalizeTask) : []);
+        setNotes(typeof parsed?.notes === "string" ? parsed.notes : "");
         return;
-      } catch {}
+      } catch (e) { console.warn("Parse local data failed:", e); }
     }
-    // 初始化
-    setTasks(DEFAULT_TASKS.map((t) => ({ id: uid(), done: false, section: "", ...t, remark: "" })));
+    setTasks(DEFAULT_TASKS.map(normalizeTask));
     setNotes("");
   }, [storageKey]);
 
-  // 保存当日数据
   useEffect(() => {
-    const payload = { tasks, notes };
-    localStorage.setItem(storageKey, JSON.stringify(payload));
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ tasks, notes }));
+    } catch (e) { console.warn("Save local data failed:", e); }
   }, [tasks, notes, storageKey]);
 
-  // 进度
-  const doneCount = tasks.filter((t) => t.done).length;
-  const prog = tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0;
+  const doneCount = tasks.filter(t=>t.done).length;
+  const prog = tasks.length ? Math.round(doneCount*100/tasks.length) : 0;
 
-  // 切换完成
-  const toggleTask = (id) =>
-    setTasks((arr) => arr.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+  const toggleTask   = (id) => setTasks(arr => arr.map(t => t.id===id ? {...t, done:!t.done} : t));
+  const autoComplete = (id) => setTasks(arr => arr.map(t => t.id===id ? {...t, done:true} : t));
+  const addTask      = () => setTasks(arr => [...arr, normalizeTask({ title:"自定义任务", minutes:25, section:"核心产出", done:false, remark:"" })]);
+  const removeTask   = (id) => setTasks(arr => arr.filter(t => t.id!==id));
+  const updateTask   = (id, patch) => setTasks(arr => arr.map(t => t.id===id ? normalizeTask({ ...t, ...patch }) : t));
 
-  // 自动完成（番茄钟用）
-  const autoComplete = (id) =>
-    setTasks((arr) => arr.map((t) => (t.id === id ? { ...t, done: true } : t)));
-
-  // 新增/删除/编辑
-  const addTask = () =>
-    setTasks((arr) => [
-      ...arr,
-      { id: uid(), title: "自定义任务", minutes: 25, section: "核心产出", done: false, remark: "" },
-    ]);
-  const removeTask = (id) => setTasks((arr) => arr.filter((t) => t.id !== id));
-  const updateTask = (id, patch) =>
-    setTasks((arr) => arr.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-
-  // 日期
-  const shiftDay = (delta) => {
-    const d = new Date(today);
-    d.setDate(d.getDate() + delta);
-    setToday(d);
-  };
+  const shiftDay = (delta) => { const d = new Date(today); d.setDate(d.getDate()+delta); setToday(d); };
 
   return (
     <div style={page}>
@@ -199,23 +165,18 @@ export default function DailyCheckin() {
         </div>
       </header>
 
-      {/* 进度条 */}
       <div style={card}>
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <div style={{ display:"flex", justifyContent:"space-between" }}>
           <div>今日进度</div>
           <div>{doneCount}/{tasks.length}（{prog}%）</div>
         </div>
-        <div style={barWrap}>
-          <div style={{ ...barFill, width: `${prog}%` }} />
-        </div>
+        <div style={barWrap}><div style={{ ...barFill, width: `${prog}%` }} /></div>
       </div>
 
-      {/* 番茄钟 */}
       <Pomodoro tasks={tasks} onAutoComplete={autoComplete} />
 
-      {/* 任务清单 */}
       <div style={card}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <h3 style={{ margin: 0 }}>✅ 今日任务</h3>
           <button style={btnPrimary} onClick={addTask}>+ 新增任务</button>
         </div>
@@ -223,16 +184,13 @@ export default function DailyCheckin() {
         <div style={{ marginTop: 12 }}>
           {tasks.map((t) => (
             <div key={t.id} style={taskRow}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
-                <input
-                  type="checkbox"
-                  checked={t.done}
-                  onChange={() => toggleTask(t.id)}
-                />
+              <label style={{ display:"flex", alignItems:"center", gap: 8, flex: 1 }}>
+                <input type="checkbox" checked={!!t.done} onChange={() => toggleTask(t.id)} />
                 <input
                   style={textInput}
-                  value={t.title}
+                  value={t.title ?? ""}
                   onChange={(e) => updateTask(t.id, { title: e.target.value })}
+                  placeholder="任务标题"
                 />
               </label>
 
@@ -241,13 +199,13 @@ export default function DailyCheckin() {
                 type="number"
                 min={5}
                 step={5}
-                value={t.minutes || 25}
-                onChange={(e) => updateTask(t.id, { minutes: Number(e.target.value || 25) })}
+                value={Number.isFinite(+t.minutes) ? +t.minutes : 25}
+                onChange={(e) => updateTask(t.id, { minutes: +e.target.value })}
                 title="预计分钟数"
               />
 
               <select
-                value={t.section || ""}
+                value={String(t.section ?? "")}
                 onChange={(e) => updateTask(t.id, { section: e.target.value })}
                 style={select}
                 title="类别"
@@ -266,11 +224,11 @@ export default function DailyCheckin() {
 
               <button style={btnDanger} onClick={() => removeTask(t.id)}>删除</button>
 
-              <div style={{ flexBasis: "100%" }} />
+              <div style={{ flexBasis:"100%" }} />
               <textarea
                 placeholder="备注/产出链接/要点…"
                 style={textarea}
-                value={t.remark || ""}
+                value={t.remark ?? ""}
                 onChange={(e) => updateTask(t.id, { remark: e.target.value })}
               />
             </div>
@@ -278,7 +236,6 @@ export default function DailyCheckin() {
         </div>
       </div>
 
-      {/* 笔记区 */}
       <div style={card}>
         <h3 style={{ marginTop: 0 }}>📝 今日复盘/杂记</h3>
         <textarea
@@ -296,82 +253,16 @@ export default function DailyCheckin() {
   );
 }
 
-// ===== 简单样式（不依赖外部库） =====
-const page = {
-  maxWidth: 960,
-  margin: "0 auto",
-  padding: "24px 16px",
-  fontFamily: "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif",
-  color: "#111",
-  background: "#fafafa",
-};
-const header = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  marginBottom: 12,
-};
-const card = {
-  background: "#fff",
-  border: "1px solid #e5e7eb",
-  borderRadius: 12,
-  padding: 16,
-  marginTop: 12,
-  boxShadow: "0 1px 2px rgba(0,0,0,.03)",
-};
-const barWrap = {
-  height: 10,
-  background: "#f1f5f9",
-  borderRadius: 999,
-  overflow: "hidden",
-  marginTop: 8,
-};
-const barFill = {
-  height: "100%",
-  background: "linear-gradient(90deg,#22c55e,#3b82f6)",
-};
-const btn = {
-  padding: "8px 12px",
-  border: "1px solid #e5e7eb",
-  background: "#fff",
-  borderRadius: 8,
-  cursor: "pointer",
-};
-const btnPrimary = {
-  ...btn,
-  background: "#111",
-  color: "#fff",
-  borderColor: "#111",
-};
-const btnDanger = {
-  ...btn,
-  borderColor: "#ef4444",
-  color: "#ef4444",
-  background: "#fff",
-};
-const textInput = {
-  flex: 1,
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid #e5e7eb",
-  outline: "none",
-};
-const numInput = { ...textInput, textAlign: "right" };
-const select = {
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid #e5e7eb",
-  background: "#fff",
-};
-const textarea = {
-  width: "100%",
-  marginTop: 8,
-  padding: 10,
-  border: "1px solid #e5e7eb",
-  borderRadius: 8,
-  minHeight: 64,
-  outline: "none",
-  resize: "vertical",
-};
-
-
+/* ------------------ 样式 ------------------ */
+const page = { maxWidth: 960, margin: "0 auto", padding: "24px 16px", fontFamily: "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif", color: "#111", background: "#fafafa" };
+const header = { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 12 };
+const card = { background:"#fff", border:"1px solid #e5e7eb", borderRadius:12, padding:16, marginTop:12, boxShadow:"0 1px 2px rgba(0,0,0,.03)" };
+const barWrap = { height:10, background:"#f1f5f9", borderRadius:999, overflow:"hidden", marginTop:8 };
+const barFill = { height:"100%", background:"linear-gradient(90deg,#22c55e,#3b82f6)" };
+const btn = { padding:"8px 12px", border:"1px solid #e5e7eb", background:"#fff", borderRadius:8, cursor:"pointer" };
+const btnPrimary = { ...btn, background:"#111", color:"#fff", borderColor:"#111" };
+const btnDanger = { ...btn, borderColor:"#ef4444", color:"#ef4444", background:"#fff" };
+const textInput = { flex:1, padding:"8px 10px", borderRadius:8, border:"1px solid #e5e7eb", outline:"none" };
+const numInput = { ...textInput, textAlign:"right" };
+const select = { padding:"8px 10px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff" };
+const textarea = { width:"100%", marginTop:8, padding:10, border:"1px solid #e5e7eb", borderRadius:8, minHeight:64, outline:"none", resize:"vertical" };
