@@ -52,6 +52,29 @@ const spanMinutes = (win) => {
   const [s, e] = win.split("-");
   return Math.max(5, timeToNum(e) - timeToNum(s));
 };
+// 今天是否逾期（只对“今天”计算）
+const isOverdueNow = (today, t) => {
+  if (!t.fixedWindow) return false;
+  const [_, end] = t.fixedWindow.split("-");
+  const now = new Date();
+  const isSameDay = dateKey(today) === dateKey(now);
+  if (!isSameDay) return false;
+  const nowMin = now.getHours()*60 + now.getMinutes();
+  return nowMin > timeToNum(end) && !t.done;
+};
+
+// 下载工具
+function download(filename, text, mime="text/plain;charset=utf-8") {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 /* ------------------ 固定任务模板（你的清单） ------------------ */
 const DEFAULT_TASKS = [
@@ -138,7 +161,7 @@ function Pomodoro({ tasks, onAutoComplete }) {
   );
 }
 
-/* ------------------ 读取全部天数据，用于统计 ------------------ */
+/* ------------------ 读取全部天数据，用于统计/导出 ------------------ */
 function readAllDayEntries() {
   const entries = [];
   for (let i = 0; i < localStorage.length; i++) {
@@ -154,19 +177,18 @@ function readAllDayEntries() {
   return entries.sort((a,b)=> a.date.localeCompare(b.date));
 }
 
-/* ------------------ 统计面板（日/周/月/年） ------------------ */
+/* ------------------ 统计面板（日/周/月/年） + 导出 ------------------ */
 function StatsPanel({ today }) {
   const [scope, setScope] = useState("day"); // day / week / month / year
   const all = readAllDayEntries();
 
-  // 当前范围内的 key 前缀
-  const dayKey = dateKey(today);
-  const week = getISOWeek(today); // YYYY-Www
-  const month = monthKey(today);  // YYYY-MM
-  const year  = yearKey(today);   // YYYY
+  const dayKeyStr = dateKey(today);
+  const week = getISOWeek(today);  // YYYY-Www
+  const month = monthKey(today);   // YYYY-MM
+  const year  = yearKey(today);    // YYYY
 
   const inScope = (dstr) => {
-    if (scope === "day")   return dstr === dayKey;
+    if (scope === "day")   return dstr === dayKeyStr;
     if (scope === "week")  return getISOWeek(new Date(dstr)) === week;
     if (scope === "month") return dstr.slice(0,7) === month;
     return dstr.slice(0,4) === year; // year
@@ -190,16 +212,48 @@ function StatsPanel({ today }) {
   });
   const rate = total ? Math.round(done*100/total) : 0;
 
+  const exportJSON = () => {
+    download(`stats-${scope}-${Date.now()}.json`, JSON.stringify(scoped, null, 2), "application/json");
+  };
+
+  const exportCSV = () => {
+    const rows = [["date","section","title","output","minutes","done","fixedWindow","remark"]];
+    scoped.forEach(e=>{
+      e.tasks.forEach(t=>{
+        rows.push([
+          e.date,
+          (t.section||""),
+          (t.title||"").replace(/\n/g," "),
+          (t.output||"").replace(/\n/g," "),
+          (Number.isFinite(+t.minutes)? +t.minutes : spanMinutes(t.fixedWindow)),
+          t.done?1:0,
+          (t.fixedWindow||""),
+          (t.remark||"").replace(/\n/g," "),
+        ]);
+      });
+    });
+    const csv = rows.map(r=>r.map(x=>{
+      const s = String(x??"");
+      if (s.includes(",") || s.includes('"')) return `"${s.replace(/"/g,'""')}"`;
+      return s;
+    }).join(",")).join("\n");
+    download(`stats-${scope}-${Date.now()}.csv`, csv, "text/csv;charset=utf-8");
+  };
+
   return (
     <div style={card}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <h3 style={{margin:0}}>📈 统计面板</h3>
-        <select value={scope} onChange={e=>setScope(e.target.value)} style={select}>
-          <option value="day">今日</option>
-          <option value="week">本周</option>
-          <option value="month">本月</option>
-          <option value="year">今年</option>
-        </select>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <select value={scope} onChange={e=>setScope(e.target.value)} style={select}>
+            <option value="day">今日</option>
+            <option value="week">本周</option>
+            <option value="month">本月</option>
+            <option value="year">今年</option>
+          </select>
+          <button style={btn} onClick={exportJSON}>导出JSON</button>
+          <button style={btn} onClick={exportCSV}>导出CSV</button>
+        </div>
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12, marginTop:12}}>
@@ -227,8 +281,8 @@ function StatsPanel({ today }) {
   );
 }
 
-/* ------------------ 计划面板（日/周/月/年） ------------------ */
-function PlannerPanel({ today }) {
+/* ------------------ 计划面板（日/周/月/年） + 注入今日清单 ------------------ */
+function PlannerPanel({ today, onInject }) {
   const [tab, setTab] = useState("day"); // day/week/month/year
 
   const keys = {
@@ -254,15 +308,24 @@ function PlannerPanel({ today }) {
     localStorage.setItem(keys[tab], JSON.stringify(data));
   }, [tab, data]);
 
+  const parseLines = (txt="") => txt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+
+  const injectToToday = () => {
+    const items = [...parseLines(data.top3), ...parseLines(data.must)];
+    if (items.length === 0) return alert("没有可注入的内容（请先填写 Top3 或 Must-do）");
+    onInject?.(items);
+  };
+
   return (
     <div style={card}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <h3 style={{margin:0}}>🗂 计划面板</h3>
-        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
           <button style={tabBtn(tab==="day")}   onClick={()=>setTab("day")}>日计划</button>
           <button style={tabBtn(tab==="week")}  onClick={()=>setTab("week")}>周计划</button>
           <button style={tabBtn(tab==="month")} onClick={()=>setTab("month")}>月计划</button>
           <button style={tabBtn(tab==="year")}  onClick={()=>setTab("year")}>年计划</button>
+          <button style={btnPrimary} onClick={injectToToday}>注入到今日清单</button>
         </div>
       </div>
 
@@ -275,7 +338,7 @@ function PlannerPanel({ today }) {
           <h4 style={{margin:"6px 0"}}>⭐ Top 3</h4>
           <textarea
             style={{...textarea, minHeight:80}}
-            placeholder="1) ...\n2) ...\n3) ..."
+            placeholder="每行一条，回车换行\n例如：发布视频1条\n例如：复盘A/B测试"
             value={data.top3}
             onChange={(e)=>setData(prev=>({...prev, top3:e.target.value}))}
           />
@@ -285,7 +348,7 @@ function PlannerPanel({ today }) {
           <h4 style={{margin:"6px 0"}}>✅ Must-do</h4>
           <textarea
             style={{...textarea, minHeight:80}}
-            placeholder="必须完成的事项（可对应你的清单）"
+            placeholder="必须完成的事项（每行一条）"
             value={data.must}
             onChange={(e)=>setData(prev=>({...prev, must:e.target.value}))}
           />
@@ -381,6 +444,21 @@ function InnerApp(){
 
   const shiftDay = (delta) => { const d = new Date(today); d.setDate(d.getDate()+delta); setToday(d); };
 
+  // 计划注入：根据文本行追加任务（去重：同标题的不再重复）
+  const injectPlanItems = (lines=[]) => {
+    const titles = new Set(tasks.map(t => t.title.trim()));
+    const newOnes = lines
+      .map(title => title.trim())
+      .filter(Boolean)
+      .filter(t => !titles.has(t))
+      .map(title => normalizeTask({ title, section:"核心产出", fixedWindow:"", output:"" }));
+    if (newOnes.length === 0) return alert("没有可注入的新任务（可能都已存在）");
+    const merged = [...tasks, ...newOnes];
+    setTasks(merged);
+    localStorage.setItem(storageKey, JSON.stringify({ tasks: merged, notes }));
+    alert(`已注入 ${newOnes.length} 条到今日清单`);
+  };
+
   return (
     <div style={page}>
       <header style={header}>
@@ -428,109 +506,115 @@ function InnerApp(){
         </div>
 
         <div style={{ marginTop: 12 }}>
-          {visibleTasks.map((t) => (
-            <div key={t.id} style={taskRow}>
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-                {/* 左侧勾选 */}
-                <input
-                  type="checkbox"
-                  checked={!!t.done}
-                  onChange={() => toggleTask(t.id)}
-                  style={{ marginTop: 4 }}
-                  title="完成勾选"
-                />
+          {visibleTasks.map((t) => {
+            const overdue = isOverdueNow(today, t);
+            return (
+              <div key={t.id} style={{...taskRow, ...(t.done? rowDone : null)}}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                  {/* 左侧勾选 */}
+                  <input
+                    type="checkbox"
+                    checked={!!t.done}
+                    onChange={() => toggleTask(t.id)}
+                    style={{ marginTop: 4 }}
+                    title="完成勾选"
+                  />
 
-                {/* 右侧主体 */}
-                <div style={{ flex: 1 }}>
-                  {locked ? (
-                    <>
-                      {/* ✅ 清单样式（只读展示） */}
-                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 }}>
-                        {t.fixedWindow && <span style={badgeTime}>{t.fixedWindow}</span>}
-                        <span style={badge}>{t.section || "未分类"}</span>
-                        <span style={titleText}>{t.title || "未命名任务"}</span>
-                        {t.output && <span style={chip}>产出：{t.output}</span>}
-                      </div>
-                      {/* 备注始终可写 */}
-                      <textarea
-                        placeholder="备注/产出链接/要点…"
-                        style={textarea}
-                        value={t.remark ?? ""}
-                        onChange={(e) => updateTask(t.id, { remark: e.target.value })}
-                        title="备注"
-                      />
-                    </>
-                  ) : (
-                    <>
-                      {/* ✏️ 解锁时可编辑 */}
-                      <label style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
-                        <input
-                          style={textInput}
-                          value={t.title ?? ""}
-                          onChange={(e) => updateTask(t.id, { title: e.target.value })}
-                          placeholder="任务标题"
-                          title="任务"
+                  {/* 右侧主体 */}
+                  <div style={{ flex: 1 }}>
+                    {locked ? (
+                      <>
+                        {/* ✅ 清单样式（只读展示） */}
+                        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 }}>
+                          {t.fixedWindow && <span style={badgeTime}>{t.fixedWindow}</span>}
+                          <span style={badge}>{t.section || "未分类"}</span>
+                          <span style={{...titleText, ...(t.done? titleDone : null)}}>
+                            {t.title || "未命名任务"}
+                          </span>
+                          {t.output && <span style={chip}>产出：{t.output}</span>}
+                          {overdue && <span style={overdueTag}>已过时</span>}
+                        </div>
+                        {/* 备注始终可写 */}
+                        <textarea
+                          placeholder="备注/产出链接/要点…"
+                          style={textarea}
+                          value={t.remark ?? ""}
+                          onChange={(e) => updateTask(t.id, { remark: e.target.value })}
+                          title="备注"
                         />
-                      </label>
+                      </>
+                    ) : (
+                      <>
+                        {/* ✏️ 解锁时可编辑 */}
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                          <input
+                            style={textInput}
+                            value={t.title ?? ""}
+                            onChange={(e) => updateTask(t.id, { title: e.target.value })}
+                            placeholder="任务标题"
+                            title="任务"
+                          />
+                        </label>
 
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
-                        <select
-                          value={String(t.section ?? "")}
-                          onChange={(e) => updateTask(t.id, { section: e.target.value })}
-                          style={select}
-                          title="模块"
-                        >
-                          <option>核心产出</option>
-                          <option>热点捕捉</option>
-                          <option>爆款拆解</option>
-                          <option>对标学习</option>
-                          <option>股票</option>
-                          <option>学习升级</option>
-                          <option>输入</option>
-                          <option>扩展产出</option>
-                          <option>微博维护</option>
-                        </select>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+                          <select
+                            value={String(t.section ?? "")}
+                            onChange={(e) => updateTask(t.id, { section: e.target.value })}
+                            style={select}
+                            title="模块"
+                          >
+                            <option>核心产出</option>
+                            <option>热点捕捉</option>
+                            <option>爆款拆解</option>
+                            <option>对标学习</option>
+                            <option>股票</option>
+                            <option>学习升级</option>
+                            <option>输入</option>
+                            <option>扩展产出</option>
+                            <option>微博维护</option>
+                          </select>
 
-                        <input
-                          style={textInput}
-                          value={t.fixedWindow || ""}
-                          onChange={(e) => updateTask(t.id, { fixedWindow: e.target.value })}
-                          placeholder="时间段 如 09:00-09:25"
-                          title="时间段"
+                          <input
+                            style={textInput}
+                            value={t.fixedWindow || ""}
+                            onChange={(e) => updateTask(t.id, { fixedWindow: e.target.value })}
+                            placeholder="时间段 如 09:00-09:25"
+                            title="时间段"
+                          />
+
+                          <input
+                            style={{ ...textInput, maxWidth: 260 }}
+                            value={t.output ?? ""}
+                            onChange={(e) => updateTask(t.id, { output: e.target.value })}
+                            placeholder="产出（如：500字草稿 / 成片30秒）"
+                            title="产出"
+                          />
+
+                          <button style={btnDanger} onClick={() => removeTask(t.id)}>删除</button>
+                        </div>
+
+                        <textarea
+                          placeholder="备注/产出链接/要点…"
+                          style={textarea}
+                          value={t.remark ?? ""}
+                          onChange={(e) => updateTask(t.id, { remark: e.target.value })}
+                          title="备注"
                         />
-
-                        <input
-                          style={{ ...textInput, maxWidth: 260 }}
-                          value={t.output ?? ""}
-                          onChange={(e) => updateTask(t.id, { output: e.target.value })}
-                          placeholder="产出（如：500字草稿 / 成片30秒）"
-                          title="产出"
-                        />
-
-                        <button style={btnDanger} onClick={() => removeTask(t.id)}>删除</button>
-                      </div>
-
-                      <textarea
-                        placeholder="备注/产出链接/要点…"
-                        style={textarea}
-                        value={t.remark ?? ""}
-                        onChange={(e) => updateTask(t.id, { remark: e.target.value })}
-                        title="备注"
-                      />
-                    </>
-                  )}
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
-      {/* 统计面板 */}
+      {/* 统计面板（含导出） */}
       <StatsPanel today={today} />
 
-      {/* 计划面板（日/周/月/年） */}
-      <PlannerPanel today={today} />
+      {/* 计划面板（含注入今日清单） */}
+      <PlannerPanel today={today} onInject={injectPlanItems} />
 
       {/* 复盘/杂记（仍保留日常记录） */}
       <div style={card}>
@@ -568,6 +652,17 @@ const badgeTime = { fontFamily:"ui-monospace, SFMono-Regular, Menlo, Monaco, Con
 const badge = { fontSize:12, padding:"2px 6px", borderRadius:6, background:"#f1f5f9", color:"#0f172a", border:"1px solid #e5e7eb" };
 const titleText = { fontSize:15, fontWeight:600 };
 const chip = { fontSize:12, padding:"2px 6px", borderRadius:999, background:"#ecfeff", color:"#155e75", border:"1px solid #cffafe" };
+/* 完成/逾期样式 */
+const rowDone = { opacity:.55 };
+const titleDone = { textDecoration:"line-through" };
+const overdueTag = {
+  fontSize: 12,
+  padding: "2px 6px",
+  borderRadius: 6,
+  background: "#fee2e2",
+  color: "#991b1b",
+  border: "1px solid #fecaca",
+};
 /* 统计卡片样式 */
 const statCard = { border:"1px solid #e5e7eb", borderRadius:12, padding:"12px 10px", background:"#fff", textAlign:"center" };
 const statNum  = { fontSize:24, fontWeight:700 };
