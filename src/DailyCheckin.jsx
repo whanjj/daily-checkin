@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 /* ------------------ 错误边界：防止整页白屏 ------------------ */
 class ErrorBoundary extends React.Component {
@@ -45,7 +45,9 @@ function Pomodoro({ tasks, onAutoComplete }) {
   const [running, setRunning] = useState(false);
   const [bindTaskId, setBindTaskId] = useState(tasks[0]?.id ?? "");
 
-  useEffect(() => { setSecondsLeft(phase === "focus" ? MODES[mode].focus : MODES[mode].rest); }, [mode]);
+  useEffect(() => {
+    setSecondsLeft(phase === "focus" ? MODES[mode].focus : MODES[mode].rest);
+  }, [mode, phase]);
 
   useEffect(() => {
     if (!running) return;
@@ -54,8 +56,8 @@ function Pomodoro({ tasks, onAutoComplete }) {
         if (s <= 1) {
           clearInterval(timer);
           if (phase === "focus" && bindTaskId) onAutoComplete?.(bindTaskId);
-          const nextPhase = phase === "focus" ? "rest" : "focus";
-          setPhase(nextPhase);
+          const next = phase === "focus" ? "rest" : "focus";
+          setPhase(next);
           setRunning(false);
           return 0;
         }
@@ -80,11 +82,21 @@ function Pomodoro({ tasks, onAutoComplete }) {
       <div style={{marginTop:8,color:"#666"}}>当前阶段：{phase==="focus"?"专注":"休息"}</div>
       <div style={{fontSize:48,fontWeight:700,margin:"12px 0"}}>{mm}:{ss}</div>
       <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-        {!running ? <button style={btnPrimary} onClick={()=>setRunning(true)}>开始</button>
-                  : <button style={btn} onClick={()=>setRunning(false)}>暂停</button>}
-        <button style={btn} onClick={()=>{
-          setRunning(false); setPhase("focus"); setSecondsLeft(MODES[mode].focus);
-        }}>重置</button>
+        {!running ? (
+          <button style={btnPrimary} onClick={()=>setRunning(true)}>开始</button>
+        ) : (
+          <button style={btn} onClick={()=>setRunning(false)}>暂停</button>
+        )}
+        <button
+          style={btn}
+          onClick={()=>{
+            setRunning(false);
+            setPhase("focus");
+            setSecondsLeft(MODES[mode].focus);
+          }}
+        >
+          重置
+        </button>
         <select value={bindTaskId} onChange={(e)=>setBindTaskId(e.target.value)} style={{...select,minWidth:220}}>
           <option value="">不绑定任务</option>
           {tasks.map(t => <option key={t.id} value={t.id}>绑定：{(t.title||"").slice(0,24)}</option>)}
@@ -110,7 +122,7 @@ function InnerApp(){
   const [tasks, setTasks] = useState([]);
   const [notes, setNotes] = useState("");
 
-  // 安全初始化：保证字段齐全，避免 undefined
+  // 规范化，避免字段缺失导致报错
   const normalizeTask = (t) => ({
     id: t.id ?? uid(),
     title: String(t.title ?? "未命名任务"),
@@ -266,3 +278,10 @@ const textInput = { flex:1, padding:"8px 10px", borderRadius:8, border:"1px soli
 const numInput = { ...textInput, textAlign:"right" };
 const select = { padding:"8px 10px", borderRadius:8, border:"1px solid #e5e7eb", background:"#fff" };
 const textarea = { width:"100%", marginTop:8, padding:10, border:"1px solid #e5e7eb", borderRadius:8, minHeight:64, outline:"none", resize:"vertical" };
+const taskRow = {  /* ✅ 修复：补上它 */
+  borderBottom: "1px solid #f1f5f9",
+  padding: "12px 0",
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+};
