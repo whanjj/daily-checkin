@@ -62,17 +62,12 @@ const isOverdueNow = (today, t) => {
   const nowMin = now.getHours()*60 + now.getMinutes();
   return nowMin > timeToNum(end) && !t.done;
 };
-
 // 下载工具
 function download(filename, text, mime="text/plain;charset=utf-8") {
   const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
 }
 
@@ -90,73 +85,192 @@ const DEFAULT_TASKS = [
   { fixedWindow: "15:30-15:45", section: "微博维护", title: "发1条+互动5条评论",             output: "微博动态" },
 ];
 
-/* ------------------ 番茄钟（可与任意任务绑定） ------------------ */
+/* ------------------ 番茄钟（北京时间/后台继续/提醒） ------------------ */
 function Pomodoro({ tasks, onAutoComplete }) {
-  const MODES = { "25/5": { focus:1500, rest:300 }, "50/10": { focus:3000, rest:600 } };
+  // 模式时长（秒）
+  const DUR = { "25/5": { focus: 25 * 60, rest: 5 * 60 }, "50/10": { focus: 50 * 60, rest: 10 * 60 } };
+  // 本地存储键（按天分）
+  const POMO_KEY = `pomo-state-${(new Date()).toISOString().slice(0,10)}`;
+
+  // 状态
   const [mode, setMode] = useState("25/5");
-  const [phase, setPhase] = useState("focus");
-  const [secondsLeft, setSecondsLeft] = useState(MODES[mode].focus);
+  const [phase, setPhase] = useState("focus");          // focus / rest
   const [running, setRunning] = useState(false);
+  const [endAt, setEndAt] = useState(null);             // 目标时间戳（ms）
   const [bindTaskId, setBindTaskId] = useState(tasks[0]?.id ?? "");
+  const [soundOn, setSoundOn] = useState(true);
+  const [notifyOn, setNotifyOn] = useState(true);
+  const [remain, setRemain] = useState(0);
 
+  // 读取历史（保证切页/刷新后继续）
   useEffect(() => {
-    setSecondsLeft(phase === "focus" ? MODES[mode].focus : MODES[mode].rest);
-  }, [mode, phase]);
+    try {
+      const raw = localStorage.getItem(POMO_KEY);
+      if (raw) {
+        const s = JSON.parse(raw);
+        if (s.mode) setMode(s.mode);
+        if (s.phase) setPhase(s.phase);
+        if (typeof s.running === "boolean") setRunning(s.running);
+        if (typeof s.endAt === "number") setEndAt(s.endAt);
+        if (s.bindTaskId) setBindTaskId(s.bindTaskId);
+        if (typeof s.soundOn === "boolean") setSoundOn(s.soundOn);
+        if (typeof s.notifyOn === "boolean") setNotifyOn(s.notifyOn);
+      }
+    } catch {}
+  }, []);
 
+  // 保存
+  const persist = (next = {}) => {
+    try {
+      const payload = { mode, phase, running, endAt, bindTaskId, soundOn, notifyOn, ...next };
+      localStorage.setItem(POMO_KEY, JSON.stringify(payload));
+    } catch {}
+  };
+
+  // 计算剩余秒（endAt - Date.now() → 后台也准确）
+  const computeRemain = () => {
+    if (!endAt) return 0;
+    const diff = Math.ceil((endAt - Date.now()) / 1000);
+    return Math.max(0, diff);
+  };
+
+  // 定时器：250ms 刷一次 UI；核心用绝对时间戳
   useEffect(() => {
-    if (!running) return;
-    const timer = setInterval(() => {
-      setSecondsLeft((s) => {
-        if (s <= 1) {
-          clearInterval(timer);
-          if (phase === "focus" && bindTaskId) onAutoComplete?.(bindTaskId);
-          const next = phase === "focus" ? "rest" : "focus";
-          setPhase(next);
-          setRunning(false);
-          return 0;
+    const iv = setInterval(() => setRemain(computeRemain()), 250);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endAt]);
+
+  // 到点提醒
+  const beep = () => {
+    if (!soundOn) return;
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = "sine"; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+      o.start();
+      setTimeout(() => { g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1); o.stop(ctx.currentTime + 0.12); }, 120);
+    } catch {}
+  };
+  const notify = (title, body) => {
+    if (!notifyOn) return;
+    try {
+      if ("Notification" in window) {
+        if (Notification.permission === "granted") {
+          new Notification(title, { body });
+        } else if (Notification.permission !== "denied") {
+          Notification.requestPermission().then((p) => {
+            if (p === "granted") new Notification(title, { body });
+          });
         }
-        return s - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [running, phase, mode, bindTaskId, onAutoComplete]);
+      }
+    } catch {}
+    if (navigator.vibrate) navigator.vibrate(200);
+  };
 
-  const mm = String(Math.floor(secondsLeft/60)).padStart(2,"0");
-  const ss = String(secondsLeft%60).padStart(2,"0");
+  // 阶段结束
+  const finishPhase = () => {
+    if (phase === "focus" && bindTaskId) onAutoComplete?.(bindTaskId);
+    beep();
+    notify(phase === "focus" ? "专注结束" : "休息结束", phase === "focus" ? "该休息了～" : "准备开始下一轮！");
+    const nextPhase = phase === "focus" ? "rest" : "focus";
+    setPhase(nextPhase);
+    setRunning(false);
+    setEndAt(null);
+    persist({ phase: nextPhase, running: false, endAt: null });
+  };
+
+  // 监听剩余时间为 0 → 结束当前阶段
+  useEffect(() => {
+    if (running && remain === 0 && endAt) {
+      finishPhase();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remain, running, endAt]);
+
+  // 北京时间展示（仅显示）
+  const fmtBeijing = (ts) => {
+    if (!ts) return "--:--";
+    return new Date(ts).toLocaleString("zh-CN", {
+      hour12: false,
+      timeZone: "Asia/Shanghai",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  };
+
+  // 控制
+  const start = () => {
+    if (running) return;
+    const dur = DUR[mode][phase];
+    const nextEnd = Date.now() + dur * 1000;
+    setEndAt(nextEnd);
+    setRunning(true);
+    persist({ endAt: nextEnd, running: true });
+    try { if (notifyOn && "Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch {}
+  };
+  const pause = () => { setRunning(false); persist({ running: false }); };
+  const reset = () => { setRunning(false); setEndAt(null); setPhase("focus"); persist({ running: false, endAt: null, phase: "focus" }); };
+  const changeMode = (v) => { if (running) pause(); setMode(v); persist({ mode: v }); };
+
+  // 格式化 mm:ss
+  const mm = String(Math.floor(remain / 60)).padStart(2, "0");
+  const ss = String(remain % 60).padStart(2, "0");
+
+  // 页面标题显示剩余时间（切到其它页也能看见）
+  useEffect(() => {
+    const old = document.title;
+    if (running && endAt) document.title = `(${mm}:${ss}) 番茄钟`;
+    else document.title = old.includes("番茄钟") ? "番茄钟" : old;
+    return () => { document.title = old; };
+  }, [running, endAt, mm, ss]);
 
   return (
     <div style={card}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
         <h3 style={{margin:0}}>⏱️ 番茄钟</h3>
-        <select value={mode} onChange={(e)=>setMode(e.target.value)} style={select}>
-          <option value="25/5">25/5</option>
-          <option value="50/10">50/10</option>
-        </select>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <select value={mode} onChange={(e)=>changeMode(e.target.value)} style={select} disabled={running}>
+            <option value="25/5">25/5</option>
+            <option value="50/10">50/10</option>
+          </select>
+          <select value={phase} onChange={(e)=>{ if(running) pause(); setPhase(e.target.value); persist({phase:e.target.value}); }} style={select}>
+            <option value="focus">专注</option>
+            <option value="rest">休息</option>
+          </select>
+          <label style={{fontSize:12,color:"#444"}}><input type="checkbox" checked={soundOn} onChange={(e)=>{setSoundOn(e.target.checked); persist({soundOn:e.target.checked});}}/> 声音</label>
+          <label style={{fontSize:12,color:"#444"}}><input type="checkbox" checked={notifyOn} onChange={(e)=>{setNotifyOn(e.target.checked); persist({notifyOn:e.target.checked});}}/> 通知</label>
+        </div>
       </div>
-      <div style={{marginTop:8,color:"#666"}}>当前阶段：{phase==="focus"?"专注":"休息"}</div>
+
+      <div style={{marginTop:8,color:"#666"}}>
+        当前阶段：{phase==="focus"?"专注":"休息"}　|　结束(北京时间)：{fmtBeijing(endAt)}
+      </div>
+
       <div style={{fontSize:48,fontWeight:700,margin:"12px 0"}}>{mm}:{ss}</div>
+
       <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
         {!running ? (
-          <button style={btnPrimary} onClick={()=>setRunning(true)}>开始</button>
+          <button style={btnPrimary} onClick={start}>开始</button>
         ) : (
-          <button style={btn} onClick={()=>setRunning(false)}>暂停</button>
+          <button style={btn} onClick={pause}>暂停</button>
         )}
-        <button
-          style={btn}
-          onClick={()=>{
-            setRunning(false);
-            setPhase("focus");
-            setSecondsLeft(MODES[mode].focus);
-          }}
-        >
-          重置
-        </button>
-        <select value={bindTaskId} onChange={(e)=>setBindTaskId(e.target.value)} style={{...select,minWidth:220}}>
+        <button style={btn} onClick={reset}>重置</button>
+        <select value={bindTaskId} onChange={(e)=>{ setBindTaskId(e.target.value); persist({bindTaskId:e.target.value}); }} style={{...select,minWidth:220}}>
           <option value="">不绑定任务</option>
           {tasks.map(t => <option key={t.id} value={t.id}>绑定：{(t.title||"").slice(0,24)}</option>)}
         </select>
       </div>
-      <div style={{fontSize:12,color:"#999",marginTop:8}}>专注结束时，若绑定任务，会自动勾选为完成。</div>
+
+      <div style={{fontSize:12,color:"#999",marginTop:8}}>
+        · 显示用 <b>北京时间</b>；计时用绝对时间戳，切到其他网页也不会慢。<br/>
+        · 阶段结束会提醒，若绑定任务则自动勾选完成。
+      </div>
     </div>
   );
 }
@@ -284,32 +398,23 @@ function StatsPanel({ today }) {
 /* ------------------ 计划面板（日/周/月/年） + 注入今日清单 ------------------ */
 function PlannerPanel({ today, onInject }) {
   const [tab, setTab] = useState("day"); // day/week/month/year
-
   const keys = {
     day:   `plan-day-${dateKey(today)}`,
     week:  `plan-week-${getISOWeek(today)}`,
     month: `plan-month-${monthKey(today)}`,
     year:  `plan-year-${yearKey(today)}`,
   };
-
   const [data, setData] = useState({ top3:"", must:"", notes:"" });
 
-  // 读取
   useEffect(()=> {
     const raw = localStorage.getItem(keys[tab]);
-    if (raw) {
-      try { setData(JSON.parse(raw)); return; } catch {}
-    }
+    if (raw) { try { setData(JSON.parse(raw)); return; } catch {} }
     setData({ top3:"", must:"", notes:"" });
   }, [tab, today]);
 
-  // 保存
-  useEffect(()=> {
-    localStorage.setItem(keys[tab], JSON.stringify(data));
-  }, [tab, data]);
+  useEffect(()=> { localStorage.setItem(keys[tab], JSON.stringify(data)); }, [tab, data]);
 
   const parseLines = (txt="") => txt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-
   const injectToToday = () => {
     const items = [...parseLines(data.top3), ...parseLines(data.must)];
     if (items.length === 0) return alert("没有可注入的内容（请先填写 Top3 或 Must-do）");
@@ -329,9 +434,7 @@ function PlannerPanel({ today, onInject }) {
         </div>
       </div>
 
-      <div style={{marginTop:12, color:"#666"}}>
-        键名：{keys[tab]}
-      </div>
+      <div style={{marginTop:12, color:"#666"}}>键名：{keys[tab]}</div>
 
       <div style={{display:"grid", gap:12, marginTop:12}}>
         <div>
@@ -343,7 +446,6 @@ function PlannerPanel({ today, onInject }) {
             onChange={(e)=>setData(prev=>({...prev, top3:e.target.value}))}
           />
         </div>
-
         <div>
           <h4 style={{margin:"6px 0"}}>✅ Must-do</h4>
           <textarea
@@ -353,7 +455,6 @@ function PlannerPanel({ today, onInject }) {
             onChange={(e)=>setData(prev=>({...prev, must:e.target.value}))}
           />
         </div>
-
         <div>
           <h4 style={{margin:"6px 0"}}>📝 Notes / Not-to-do</h4>
           <textarea
@@ -368,7 +469,7 @@ function PlannerPanel({ today, onInject }) {
   );
 }
 
-/* ------------------ 主组件：固定清单 + 锁定编辑 + 清单风格 ------------------ */
+/* ------------------ 主组件：清单 + 番茄钟 + 统计 + 计划 ------------------ */
 export default function DailyCheckin() {
   return (
     <ErrorBoundary>
@@ -384,7 +485,7 @@ function InnerApp(){
   const [notes, setNotes] = useState("");
   const [locked, setLocked] = useState(true); // ✅ 默认锁定
 
-  // 规范化，避免字段缺失
+  // 规范化
   const normalizeTask = (t) => ({
     id: t.id ?? uid(),
     title: String(t.title ?? "未命名任务"),
@@ -397,14 +498,14 @@ function InnerApp(){
     altDays: !!t.altDays,
   });
 
-  // “隔日任务”规则：偶数日显示（改成奇数：day % 2 === 1）
+  // 隔日任务：偶数日显示（改奇数：day % 2 === 1）
   const shouldShowToday = (task, d) => {
     if (!task.altDays) return true;
     const day = d.getDate();
     return day % 2 === 0;
   };
 
-  // 读取（包含自动迁移：若多数任务没有 fixedWindow，则使用模板覆盖）
+  // 读取（自动迁移：若多数任务没有 fixedWindow，用模板覆盖）
   useEffect(() => {
     const raw = localStorage.getItem(storageKey);
     try {
@@ -426,9 +527,7 @@ function InnerApp(){
 
   // 保存
   useEffect(() => {
-    try {
-      localStorage.setItem(storageKey, JSON.stringify({ tasks, notes }));
-    } catch (e) { console.warn("Save local data failed:", e); }
+    try { localStorage.setItem(storageKey, JSON.stringify({ tasks, notes })); } catch (e) { console.warn("Save failed:", e); }
   }, [tasks, notes, storageKey]);
 
   const visibleTasks = [...tasks].filter(t => shouldShowToday(t, today)).sort(compareByFixedWindow);
@@ -441,10 +540,9 @@ function InnerApp(){
   const addTask      = () => setTasks(arr => [...arr, normalizeTask({ title:"自定义任务", section:"核心产出", fixedWindow:"", output:"", done:false, remark:"" })]);
   const removeTask   = (id) => setTasks(arr => arr.filter(t => t.id!==id));
   const updateTask   = (id, patch) => setTasks(arr => arr.map(t => t.id===id ? normalizeTask({ ...t, ...patch }) : t));
+  const shiftDay     = (delta) => { const d = new Date(today); d.setDate(d.getDate()+delta); setToday(d); };
 
-  const shiftDay = (delta) => { const d = new Date(today); d.setDate(d.getDate()+delta); setToday(d); };
-
-  // 计划注入：根据文本行追加任务（去重：同标题的不再重复）
+  // 计划注入：根据文本行追加任务（去重：同标题不重复）
   const injectPlanItems = (lines=[]) => {
     const titles = new Set(tasks.map(t => t.title.trim()));
     const newOnes = lines
@@ -498,7 +596,7 @@ function InnerApp(){
       {/* 番茄钟 */}
       <Pomodoro tasks={visibleTasks} onAutoComplete={autoComplete} />
 
-      {/* 任务清单（清单风格展示 / 解锁后可编辑） */}
+      {/* 任务清单（锁定=清单；解锁=编辑） */}
       <div style={card}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, flexWrap:"wrap" }}>
           <h3 style={{ margin: 0 }}>✅ 今日任务（固定清单）</h3>
@@ -511,30 +609,17 @@ function InnerApp(){
             return (
               <div key={t.id} style={{...taskRow, ...(t.done? rowDone : null)}}>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-                  {/* 左侧勾选 */}
-                  <input
-                    type="checkbox"
-                    checked={!!t.done}
-                    onChange={() => toggleTask(t.id)}
-                    style={{ marginTop: 4 }}
-                    title="完成勾选"
-                  />
-
-                  {/* 右侧主体 */}
+                  <input type="checkbox" checked={!!t.done} onChange={() => toggleTask(t.id)} style={{ marginTop: 4 }} title="完成勾选" />
                   <div style={{ flex: 1 }}>
                     {locked ? (
                       <>
-                        {/* ✅ 清单样式（只读展示） */}
                         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 }}>
                           {t.fixedWindow && <span style={badgeTime}>{t.fixedWindow}</span>}
                           <span style={badge}>{t.section || "未分类"}</span>
-                          <span style={{...titleText, ...(t.done? titleDone : null)}}>
-                            {t.title || "未命名任务"}
-                          </span>
+                          <span style={{...titleText, ...(t.done? titleDone : null)}}>{t.title || "未命名任务"}</span>
                           {t.output && <span style={chip}>产出：{t.output}</span>}
                           {overdue && <span style={overdueTag}>已过时</span>}
                         </div>
-                        {/* 备注始终可写 */}
                         <textarea
                           placeholder="备注/产出链接/要点…"
                           style={textarea}
@@ -545,7 +630,6 @@ function InnerApp(){
                       </>
                     ) : (
                       <>
-                        {/* ✏️ 解锁时可编辑 */}
                         <label style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
                           <input
                             style={textInput}
@@ -616,7 +700,7 @@ function InnerApp(){
       {/* 计划面板（含注入今日清单） */}
       <PlannerPanel today={today} onInject={injectPlanItems} />
 
-      {/* 复盘/杂记（仍保留日常记录） */}
+      {/* 复盘/杂记 */}
       <div style={card}>
         <h3 style={{ marginTop: 0 }}>📝 今日复盘/杂记</h3>
         <textarea
@@ -655,21 +739,9 @@ const chip = { fontSize:12, padding:"2px 6px", borderRadius:999, background:"#ec
 /* 完成/逾期样式 */
 const rowDone = { opacity:.55 };
 const titleDone = { textDecoration:"line-through" };
-const overdueTag = {
-  fontSize: 12,
-  padding: "2px 6px",
-  borderRadius: 6,
-  background: "#fee2e2",
-  color: "#991b1b",
-  border: "1px solid #fecaca",
-};
+const overdueTag = { fontSize:12, padding:"2px 6px", borderRadius:6, background:"#fee2e2", color:"#991b1b", border:"1px solid #fecaca" };
 /* 统计卡片样式 */
 const statCard = { border:"1px solid #e5e7eb", borderRadius:12, padding:"12px 10px", background:"#fff", textAlign:"center" };
 const statNum  = { fontSize:24, fontWeight:700 };
 const statLabel= { fontSize:12, color:"#666" };
-const tabBtn = (active)=> ({
-  ...btn,
-  background: active ? "#111" : "#fff",
-  color: active ? "#fff" : "#111",
-  borderColor: active ? "#111" : "#e5e7eb"
-});
+const tabBtn = (active)=> ({ ...btn, background: active ? "#111" : "#fff", color: active ? "#fff" : "#111", borderColor: active ? "#111" : "#e5e7eb" });
