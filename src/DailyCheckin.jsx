@@ -85,24 +85,22 @@ const DEFAULT_TASKS = [
   { fixedWindow: "15:30-15:45", section: "微博维护", title: "发1条+互动5条评论",             output: "微博动态" },
 ];
 
-/* ------------------ 番茄钟（北京时间/后台继续/提醒） ------------------ */
+/* ------------------ 番茄钟（北京时间/后台继续/提醒，强化版） ------------------ */
 function Pomodoro({ tasks, onAutoComplete }) {
-  // 模式时长（秒）
   const DUR = { "25/5": { focus: 25 * 60, rest: 5 * 60 }, "50/10": { focus: 50 * 60, rest: 10 * 60 } };
-  // 本地存储键（按天分）
   const POMO_KEY = `pomo-state-${(new Date()).toISOString().slice(0,10)}`;
 
-  // 状态
   const [mode, setMode] = useState("25/5");
-  const [phase, setPhase] = useState("focus");          // focus / rest
+  const [phase, setPhase] = useState("focus");
   const [running, setRunning] = useState(false);
-  const [endAt, setEndAt] = useState(null);             // 目标时间戳（ms）
+  const [endAt, setEndAt] = useState(null);     // 目标时间戳（ms）
   const [bindTaskId, setBindTaskId] = useState(tasks[0]?.id ?? "");
   const [soundOn, setSoundOn] = useState(true);
   const [notifyOn, setNotifyOn] = useState(true);
   const [remain, setRemain] = useState(0);
+  const [bjNow, setBjNow] = useState(() => new Date());
 
-  // 读取历史（保证切页/刷新后继续）
+  // —— 读取历史（保证刷新/切页继续）
   useEffect(() => {
     try {
       const raw = localStorage.getItem(POMO_KEY);
@@ -119,7 +117,7 @@ function Pomodoro({ tasks, onAutoComplete }) {
     } catch {}
   }, []);
 
-  // 保存
+  // —— 保存
   const persist = (next = {}) => {
     try {
       const payload = { mode, phase, running, endAt, bindTaskId, soundOn, notifyOn, ...next };
@@ -127,21 +125,23 @@ function Pomodoro({ tasks, onAutoComplete }) {
     } catch {}
   };
 
-  // 计算剩余秒（endAt - Date.now() → 后台也准确）
-  const computeRemain = () => {
+  // —— 计算剩余秒（用绝对时间戳，后台也准确）
+  const computeRemain = React.useCallback(() => {
     if (!endAt) return 0;
     const diff = Math.ceil((endAt - Date.now()) / 1000);
     return Math.max(0, diff);
-  };
-
-  // 定时器：250ms 刷一次 UI；核心用绝对时间戳
-  useEffect(() => {
-    const iv = setInterval(() => setRemain(computeRemain()), 250);
-    return () => clearInterval(iv);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endAt]);
 
-  // 到点提醒
+  // —— UI 心跳：每 250ms 刷一次剩余时间；并每秒刷新一次“现在北京时间”
+  useEffect(() => {
+    // 立刻对时一次（避免刚点开始时短暂显示 00:00）
+    setRemain(computeRemain());
+    const iv = setInterval(() => setRemain(computeRemain()), 250);
+    const clock = setInterval(() => setBjNow(new Date()), 1000);
+    return () => { clearInterval(iv); clearInterval(clock); };
+  }, [computeRemain]);
+
+  // —— 到点提醒
   const beep = () => {
     if (!soundOn) return;
     try {
@@ -160,75 +160,68 @@ function Pomodoro({ tasks, onAutoComplete }) {
     if (!notifyOn) return;
     try {
       if ("Notification" in window) {
-        if (Notification.permission === "granted") {
-          new Notification(title, { body });
-        } else if (Notification.permission !== "denied") {
-          Notification.requestPermission().then((p) => {
-            if (p === "granted") new Notification(title, { body });
-          });
+        if (Notification.permission === "granted") new Notification(title, { body });
+        else if (Notification.permission !== "denied") {
+          Notification.requestPermission().then((p) => { if (p === "granted") new Notification(title, { body }); });
         }
       }
     } catch {}
     if (navigator.vibrate) navigator.vibrate(200);
   };
 
-  // 阶段结束
+  // —— 阶段结束
   const finishPhase = () => {
     if (phase === "focus" && bindTaskId) onAutoComplete?.(bindTaskId);
     beep();
     notify(phase === "focus" ? "专注结束" : "休息结束", phase === "focus" ? "该休息了～" : "准备开始下一轮！");
-    const nextPhase = phase === "focus" ? "rest" : "focus";
-    setPhase(nextPhase);
+    const next = phase === "focus" ? "rest" : "focus";
+    setPhase(next);
     setRunning(false);
     setEndAt(null);
-    persist({ phase: nextPhase, running: false, endAt: null });
+    persist({ phase: next, running: false, endAt: null });
   };
 
-  // 监听剩余时间为 0 → 结束当前阶段
+  // —— 到点切换阶段（remain 归零且在运行时）
   useEffect(() => {
-    if (running && remain === 0 && endAt) {
-      finishPhase();
-    }
+    if (running && endAt && remain === 0) finishPhase();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remain, running, endAt]);
 
-  // 北京时间展示（仅显示）
+  // —— 北京时间格式化（展示用；计时仍用 UTC 时间戳）
   const fmtBeijing = (ts) => {
-    if (!ts) return "--:--";
-    return new Date(ts).toLocaleString("zh-CN", {
-      hour12: false,
-      timeZone: "Asia/Shanghai",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    if (!ts) return "--:--:--";
+    return new Date(ts).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai",
+      hour:"2-digit", minute:"2-digit", second:"2-digit" });
   };
+  const fmtBjNow = bjNow.toLocaleString("zh-CN", { hour12:false, timeZone:"Asia/Shanghai",
+    year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit" });
 
-  // 控制
+  // —— 控制
   const start = () => {
     if (running) return;
     const dur = DUR[mode][phase];
     const nextEnd = Date.now() + dur * 1000;
     setEndAt(nextEnd);
     setRunning(true);
+    // 立刻对时一次
+    setRemain(Math.ceil(dur));
     persist({ endAt: nextEnd, running: true });
     try { if (notifyOn && "Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch {}
   };
   const pause = () => { setRunning(false); persist({ running: false }); };
-  const reset = () => { setRunning(false); setEndAt(null); setPhase("focus"); persist({ running: false, endAt: null, phase: "focus" }); };
+  const reset = () => { setRunning(false); setEndAt(null); setPhase("focus"); setRemain(0); persist({ running: false, endAt: null, phase: "focus" }); };
   const changeMode = (v) => { if (running) pause(); setMode(v); persist({ mode: v }); };
 
-  // 格式化 mm:ss
-  const mm = String(Math.floor(remain / 60)).padStart(2, "0");
-  const ss = String(remain % 60).padStart(2, "0");
-
-  // 页面标题显示剩余时间（切到其它页也能看见）
+  // —— 页面标题显示剩余时间（切到其它标签也能看见）
   useEffect(() => {
     const old = document.title;
-    if (running && endAt) document.title = `(${mm}:${ss}) 番茄钟`;
+    if (running && endAt) document.title = `(${String(Math.floor(remain/60)).padStart(2,"0")}:${String(remain%60).padStart(2,"0")}) 番茄钟`;
     else document.title = old.includes("番茄钟") ? "番茄钟" : old;
     return () => { document.title = old; };
-  }, [running, endAt, mm, ss]);
+  }, [running, endAt, remain]);
+
+  const mm = String(Math.floor(remain / 60)).padStart(2, "0");
+  const ss = String(remain % 60).padStart(2, "0");
 
   return (
     <div style={card}>
@@ -248,7 +241,10 @@ function Pomodoro({ tasks, onAutoComplete }) {
         </div>
       </div>
 
-      <div style={{marginTop:8,color:"#666"}}>
+      <div style={{marginTop:6, color:"#666"}}>
+        现在北京时间：<b>{fmtBjNow}</b>
+      </div>
+      <div style={{marginTop:6, color:"#666"}}>
         当前阶段：{phase==="focus"?"专注":"休息"}　|　结束(北京时间)：{fmtBeijing(endAt)}
       </div>
 
@@ -268,8 +264,8 @@ function Pomodoro({ tasks, onAutoComplete }) {
       </div>
 
       <div style={{fontSize:12,color:"#999",marginTop:8}}>
-        · 显示用 <b>北京时间</b>；计时用绝对时间戳，切到其他网页也不会慢。<br/>
-        · 阶段结束会提醒，若绑定任务则自动勾选完成。
+        · 计时用绝对时间戳，切到其他网页也不会慢；显示为<b>北京时间</b>。<br/>
+        · 阶段结束会提示（声音/通知/震动），若绑定任务则自动勾选完成。
       </div>
     </div>
   );
@@ -745,3 +741,4 @@ const statCard = { border:"1px solid #e5e7eb", borderRadius:12, padding:"12px 10
 const statNum  = { fontSize:24, fontWeight:700 };
 const statLabel= { fontSize:12, color:"#666" };
 const tabBtn = (active)=> ({ ...btn, background: active ? "#111" : "#fff", color: active ? "#fff" : "#111", borderColor: active ? "#111" : "#e5e7eb" });
+
