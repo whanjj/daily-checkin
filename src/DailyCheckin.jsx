@@ -73,17 +73,51 @@ function download(filename, text, mime="text/plain;charset=utf-8") {
 
 /* ------------------ 固定任务模板（你的清单） ------------------ */
 const DEFAULT_TASKS = [
-  { fixedWindow: "09:00-09:50", section: "核心产出", title: "写公众号草稿500字",            output: "500字草稿" },
-  { fixedWindow: "10:00-10:25", section: "核心产出", title: "改稿+排版",                    output: "可发布文章" },
-  { fixedWindow: "10:30-10:55", section: "热点捕捉", title: "浏览热榜，记录3条热点",         output: "热点清单" },
-  { fixedWindow: "11:00-11:15", section: "爆款拆解", title: "拆解1个爆款标题/开头",         output: "拆解笔记" },
-  { fixedWindow: "11:15-11:30", section: "对标学习", title: "对比1个账号选题（隔日）",       output: "对标表", altDays: true }, // 偶数日显示
-  { fixedWindow: "11:30-12:00", section: "股票",     title: "查盘+写下1条操作逻辑",          output: "投资日志" },
-  { fixedWindow: "14:00-14:30", section: "学习升级", title: "Coze/AI 短视频：做1个小案例",   output: "工作流/短视频demo" },
-  { fixedWindow: "14:30-15:00", section: "输入",     title: "阅读10页+写3条灵感",            output: "灵感清单" },
-  { fixedWindow: "15:00-15:30", section: "扩展产出", title: "剪辑1条短视频（视频号/小红书）", output: "成片30秒" },
-  { fixedWindow: "15:30-15:45", section: "微博维护", title: "发1条+互动5条评论",             output: "微博动态" },
+  { fixedWindow: "09:00-09:50", section: "核心产出", title: "写公众号草稿500字",            output: "500字草稿", priority: "IN" },
+  { fixedWindow: "10:00-10:25", section: "核心产出", title: "改稿+排版",                    output: "可发布文章", priority: "IN" },
+  { fixedWindow: "10:30-10:55", section: "热点捕捉", title: "浏览热榜，记录3条热点",         output: "热点清单",   priority: "nN" },
+  { fixedWindow: "11:00-11:15", section: "爆款拆解", title: "拆解1个爆款标题/开头",         output: "拆解笔记",   priority: "In" },
+  { fixedWindow: "11:15-11:30", section: "对标学习", title: "对比1个账号选题（隔日）",       output: "对标表",     altDays: true, priority: "In" }, // 偶数日显示
+  { fixedWindow: "11:30-12:00", section: "股票",     title: "查盘+写下1条操作逻辑",          output: "投资日志",   priority: "IN" },
+  { fixedWindow: "14:00-14:30", section: "学习升级", title: "Coze/AI 短视频：做1个小案例",   output: "工作流/短视频demo", priority: "In" },
+  { fixedWindow: "14:30-15:00", section: "输入",     title: "阅读10页+写3条灵感",            output: "灵感清单",   priority: "In" },
+  { fixedWindow: "15:00-15:30", section: "扩展产出", title: "剪辑1条短视频（视频号/小红书）", output: "成片30秒",   priority: "IN" },
+  { fixedWindow: "15:30-15:45", section: "微博维护", title: "发1条+互动5条评论",             output: "微博动态",   priority: "nN" },
 ];
+
+/* ------------------ 优先级枚举（四象限） ------------------ */
+/**
+ * 以两个字符表示：
+ *  第1位：I/i = 重要/不重要
+ *  第2位：N/n = 紧急/不紧急
+ *  如 "IN"=重要且紧急，"In"=重要不紧急，"nN"=不重要紧急，"nn"=不重要不紧急
+ */
+const PRIORITY_LABEL = {
+  IN: "重要&紧急",
+  In: "重要不紧急",
+  nN: "不重要但紧急",
+  nn: "不重要不紧急",
+};
+const PRIORITY_ORDER = ["IN","In","nN","nn"];
+
+/* ------------------ 精力槽（可改） ------------------ */
+const ENERGY_PRESET = {
+  morningHigh: "09:00-12:00",   // 高能
+  afternoonMid: "14:00-17:30",  // 中能
+  eveningLow: "19:00-22:00",    // 低能
+};
+const isInWindow = (win, hhmm) => {
+  if (!win) return false;
+  const [s,e] = win.split("-");
+  const n = timeToNum(hhmm);
+  return n >= timeToNum(s) && n <= timeToNum(e);
+};
+const energyLevelAt = (hhmm) => {
+  if (isInWindow(ENERGY_PRESET.morningHigh, hhmm)) return "high";
+  if (isInWindow(ENERGY_PRESET.afternoonMid, hhmm)) return "mid";
+  if (isInWindow(ENERGY_PRESET.eveningLow, hhmm)) return "low";
+  return "unknown";
+};
 
 /* ------------------ 番茄钟（北京时间/后台继续/提醒，强化版） ------------------ */
 function Pomodoro({ tasks, onAutoComplete }) {
@@ -100,7 +134,6 @@ function Pomodoro({ tasks, onAutoComplete }) {
   const [remain, setRemain] = useState(0);
   const [bjNow, setBjNow] = useState(() => new Date());
 
-  // —— 读取历史（保证刷新/切页继续）
   useEffect(() => {
     try {
       const raw = localStorage.getItem(POMO_KEY);
@@ -117,7 +150,6 @@ function Pomodoro({ tasks, onAutoComplete }) {
     } catch {}
   }, []);
 
-  // —— 保存
   const persist = (next = {}) => {
     try {
       const payload = { mode, phase, running, endAt, bindTaskId, soundOn, notifyOn, ...next };
@@ -125,23 +157,19 @@ function Pomodoro({ tasks, onAutoComplete }) {
     } catch {}
   };
 
-  // —— 计算剩余秒（用绝对时间戳，后台也准确）
   const computeRemain = React.useCallback(() => {
     if (!endAt) return 0;
     const diff = Math.ceil((endAt - Date.now()) / 1000);
     return Math.max(0, diff);
   }, [endAt]);
 
-  // —— UI 心跳：每 250ms 刷一次剩余时间；并每秒刷新一次“现在北京时间”
   useEffect(() => {
-    // 立刻对时一次（避免刚点开始时短暂显示 00:00）
     setRemain(computeRemain());
     const iv = setInterval(() => setRemain(computeRemain()), 250);
     const clock = setInterval(() => setBjNow(new Date()), 1000);
     return () => { clearInterval(iv); clearInterval(clock); };
   }, [computeRemain]);
 
-  // —— 到点提醒
   const beep = () => {
     if (!soundOn) return;
     try {
@@ -169,7 +197,6 @@ function Pomodoro({ tasks, onAutoComplete }) {
     if (navigator.vibrate) navigator.vibrate(200);
   };
 
-  // —— 阶段结束
   const finishPhase = () => {
     if (phase === "focus" && bindTaskId) onAutoComplete?.(bindTaskId);
     beep();
@@ -181,13 +208,11 @@ function Pomodoro({ tasks, onAutoComplete }) {
     persist({ phase: next, running: false, endAt: null });
   };
 
-  // —— 到点切换阶段（remain 归零且在运行时）
   useEffect(() => {
     if (running && endAt && remain === 0) finishPhase();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remain, running, endAt]);
 
-  // —— 北京时间格式化（展示用；计时仍用 UTC 时间戳）
   const fmtBeijing = (ts) => {
     if (!ts) return "--:--:--";
     return new Date(ts).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai",
@@ -196,14 +221,12 @@ function Pomodoro({ tasks, onAutoComplete }) {
   const fmtBjNow = bjNow.toLocaleString("zh-CN", { hour12:false, timeZone:"Asia/Shanghai",
     year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit" });
 
-  // —— 控制
   const start = () => {
     if (running) return;
     const dur = DUR[mode][phase];
     const nextEnd = Date.now() + dur * 1000;
     setEndAt(nextEnd);
     setRunning(true);
-    // 立刻对时一次
     setRemain(Math.ceil(dur));
     persist({ endAt: nextEnd, running: true });
     try { if (notifyOn && "Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch {}
@@ -212,7 +235,6 @@ function Pomodoro({ tasks, onAutoComplete }) {
   const reset = () => { setRunning(false); setEndAt(null); setPhase("focus"); setRemain(0); persist({ running: false, endAt: null, phase: "focus" }); };
   const changeMode = (v) => { if (running) pause(); setMode(v); persist({ mode: v }); };
 
-  // —— 页面标题显示剩余时间（切到其它标签也能看见）
   useEffect(() => {
     const old = document.title;
     if (running && endAt) document.title = `(${String(Math.floor(remain/60)).padStart(2,"0")}:${String(remain%60).padStart(2,"0")}) 番茄钟`;
@@ -287,8 +309,56 @@ function readAllDayEntries() {
   return entries.sort((a,b)=> a.date.localeCompare(b.date));
 }
 
-/* ------------------ 统计面板（日/周/月/年） + 导出 ------------------ */
-function StatsPanel({ today }) {
+/* ------------------ 目标面板（OKR/年度目标） ------------------ */
+function GoalsPanel({ goals, setGoals }) {
+  const [name, setName] = useState("");
+  const [desc, setDesc] = useState("");
+  const add = () => {
+    const title = name.trim();
+    if (!title) return;
+    const g = { id: uid(), title, desc: desc.trim() };
+    const next = [...goals, g];
+    setGoals(next);
+    localStorage.setItem("goals-v1", JSON.stringify(next));
+    setName(""); setDesc("");
+  };
+  const del = (id) => {
+    const next = goals.filter(g=>g.id!==id);
+    setGoals(next);
+    localStorage.setItem("goals-v1", JSON.stringify(next));
+  };
+  return (
+    <div style={card}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <h3 style={{margin:0}}>🎯 目标（OKR/年度方向）</h3>
+        <div style={{fontSize:12,color:"#666"}}>可在任务中绑定到具体目标，统计会显示每个目标的覆盖率</div>
+      </div>
+      <div style={{display:"grid", gap:10, marginTop:10}}>
+        <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
+          <input style={{...textInput, minWidth:220}} value={name} onChange={e=>setName(e.target.value)} placeholder="目标名（如：增长到1万粉）"/>
+          <input style={{...textInput, minWidth:320}} value={desc} onChange={e=>setDesc(e.target.value)} placeholder="描述（可选）"/>
+          <button style={btnPrimary} onClick={add}>+ 新增目标</button>
+        </div>
+        {goals.length===0 ? (
+          <div style={{color:"#666"}}>暂无目标，先添加一个吧。</div>
+        ) : (
+          <div style={{display:"flex", flexWrap:"wrap", gap:8}}>
+            {goals.map(g=>(
+              <div key={g.id} style={{...chip, display:"inline-flex", alignItems:"center", gap:8}}>
+                <b>{g.title}</b>
+                {g.desc ? <span style={{color:"#0f172a80"}}>{g.desc}</span> : null}
+                <button style={{...btn, padding:"2px 6px"}} onClick={()=>del(g.id)}>删除</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------ 统计面板（日/周/月/年） + 导出 + 目标/象限 ------------------ */
+function StatsPanel({ today, goals }) {
   const [scope, setScope] = useState("day"); // day / week / month / year
   const all = readAllDayEntries();
 
@@ -306,9 +376,10 @@ function StatsPanel({ today }) {
 
   const scoped = all.filter(e => inScope(e.date));
 
-  // 汇总
   let total=0, done=0, minutesDone=0;
   const bySection = {};
+  const byPriority = { IN:0, In:0, nN:0, nn:0 };
+  const byGoal = {}; // goalId -> count(done)
   scoped.forEach(e => {
     e.tasks.forEach(t => {
       total += 1;
@@ -317,6 +388,9 @@ function StatsPanel({ today }) {
         minutesDone += Number.isFinite(+t.minutes) ? +t.minutes : spanMinutes(t.fixedWindow);
         const sec = t.section || "未分类";
         bySection[sec] = (bySection[sec] || 0) + 1;
+        const pr = t.priority && PRIORITY_LABEL[t.priority] ? t.priority : null;
+        if (pr) byPriority[pr] = (byPriority[pr]||0)+1;
+        if (t.goalId) byGoal[t.goalId] = (byGoal[t.goalId]||0)+1;
       }
     });
   });
@@ -325,9 +399,8 @@ function StatsPanel({ today }) {
   const exportJSON = () => {
     download(`stats-${scope}-${Date.now()}.json`, JSON.stringify(scoped, null, 2), "application/json");
   };
-
   const exportCSV = () => {
-    const rows = [["date","section","title","output","minutes","done","fixedWindow","remark"]];
+    const rows = [["date","section","title","output","minutes","done","fixedWindow","remark","priority","goalId"]];
     scoped.forEach(e=>{
       e.tasks.forEach(t=>{
         rows.push([
@@ -339,6 +412,8 @@ function StatsPanel({ today }) {
           t.done?1:0,
           (t.fixedWindow||""),
           (t.remark||"").replace(/\n/g," "),
+          (t.priority||""),
+          (t.goalId||""),
         ]);
       });
     });
@@ -373,6 +448,7 @@ function StatsPanel({ today }) {
         <div style={statCard}><div style={statNum}>{minutesDone}</div><div style={statLabel}>完成分钟</div></div>
       </div>
 
+      {/* 模块分布 */}
       <div style={{marginTop:16}}>
         <h4 style={{margin:"8px 0"}}>模块完成分布</h4>
         {Object.keys(bySection).length === 0 ? (
@@ -380,10 +456,34 @@ function StatsPanel({ today }) {
         ) : (
           <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
             {Object.entries(bySection).map(([sec, num]) => (
-              <span key={sec} style={badge}>
-                {sec}：{num}
-              </span>
+              <span key={sec} style={badge}>{sec}：{num}</span>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* 四象限分布 */}
+      <div style={{marginTop:16}}>
+        <h4 style={{margin:"8px 0"}}>优先级（重要/紧急四象限）完成分布</h4>
+        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+          {PRIORITY_ORDER.map(k => (
+            <span key={k} style={badge}>{PRIORITY_LABEL[k]}：{byPriority[k]||0}</span>
+          ))}
+        </div>
+      </div>
+
+      {/* 目标覆盖率 */}
+      <div style={{marginTop:16}}>
+        <h4 style={{margin:"8px 0"}}>按目标的完成情况</h4>
+        {goals.length===0 ? <div style={{color:"#666"}}>暂无目标</div> : (
+          <div style={{display:"grid", gap:8}}>
+            {goals.map(g=>{
+              const n = byGoal[g.id]||0;
+              return <div key={g.id} style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                <div><b>{g.title}</b> {g.desc? <span style={{color:"#666"}}>— {g.desc}</span> : null}</div>
+                <div style={{fontWeight:700}}>{n}</div>
+              </div>;
+            })}
           </div>
         )}
       </div>
@@ -430,7 +530,7 @@ function PlannerPanel({ today, onInject }) {
         </div>
       </div>
 
-      <div style={{marginTop:12, color:"#666"}}>键名：{keys[tab]}</div>
+      <div style={{marginTop:12, color:"#666"}}>（Top3 对应今天早间第一优先；Must-do 是今天收工前必须落地）</div>
 
       <div style={{display:"grid", gap:12, marginTop:12}}>
         <div>
@@ -465,7 +565,7 @@ function PlannerPanel({ today, onInject }) {
   );
 }
 
-/* ------------------ 主组件：清单 + 番茄钟 + 统计 + 计划 ------------------ */
+/* ------------------ 主组件：清单 + 番茄钟 + 目标 + 统计 + 计划 ------------------ */
 export default function DailyCheckin() {
   return (
     <ErrorBoundary>
@@ -477,9 +577,13 @@ export default function DailyCheckin() {
 function InnerApp(){
   const [today, setToday] = useState(() => new Date());
   const storageKey = useMemo(() => `dc-${dateKey(today)}`, [today]);
+
   const [tasks, setTasks] = useState([]);
   const [notes, setNotes] = useState("");
   const [locked, setLocked] = useState(true); // ✅ 默认锁定
+  const [goals, setGoals] = useState(()=> {
+    try { return JSON.parse(localStorage.getItem("goals-v1")||"[]"); } catch { return []; }
+  });
 
   // 规范化
   const normalizeTask = (t) => ({
@@ -492,6 +596,9 @@ function InnerApp(){
     fixedWindow: t.fixedWindow ?? "",
     output: t.output ?? "",
     altDays: !!t.altDays,
+    // 新增
+    priority: (t.priority && PRIORITY_LABEL[t.priority]) ? t.priority : "In",
+    goalId: t.goalId ?? "",
   });
 
   // 隔日任务：偶数日显示（改奇数：day % 2 === 1）
@@ -553,8 +660,36 @@ function InnerApp(){
     alert(`已注入 ${newOnes.length} 条到今日清单`);
   };
 
+  // —— 把今日清单写入“昨天计划”的辅助（保持你之前的需求）
+  const linesFromTasks = (arr=[]) => {
+    return arr.map(t => {
+      const time = t.fixedWindow ? `[${t.fixedWindow}] ` : "";
+      const out  = t.output ? ` → ${t.output}` : "";
+      return `${time}${t.title}${out}`;
+    });
+  };
+  const writePlanForDate = (dateObj, { top3="", must="", notes="" }) => {
+    const key = `plan-day-${dateKey(dateObj)}`;
+    try {
+      const old = JSON.parse(localStorage.getItem(key) || "{}");
+      const next = {
+        top3: typeof old.top3 === "string" && old.top3.trim() ? old.top3 : top3,
+        must,
+        notes: typeof old.notes === "string" ? old.notes : notes,
+      };
+      localStorage.setItem(key, JSON.stringify(next));
+      alert(`已写入到【${dateKey(dateObj)}】的日计划（must）。`);
+    } catch (e) {
+      console.warn("writePlanForDate failed:", e);
+      alert("写入计划失败，请重试");
+    }
+  };
+
   return (
     <div style={page}>
+      {/* 目标面板 */}
+      <GoalsPanel goals={goals} setGoals={setGoals} />
+
       <header style={header}>
         <div>
           <h1 style={{ margin: 0 }}>📅 每日执行打卡</h1>
@@ -577,6 +712,35 @@ function InnerApp(){
           >
             重置今日清单
           </button>
+
+          {/* 快捷：写入昨天/指定日计划 */}
+          <button
+            style={btn}
+            onClick={() => {
+              const d = new Date(today);
+              d.setDate(d.getDate() - 1);
+              const lines = linesFromTasks(visibleTasks);
+              if (!lines.length) return alert("今天没有可写入的任务。");
+              writePlanForDate(d, { must: lines.join("\n") });
+            }}
+          >
+            写入“昨天日计划”
+          </button>
+          <button
+            style={btn}
+            onClick={() => {
+              const s = prompt("写入到哪一天？（格式：YYYY-MM-DD）", dateKey(new Date()));
+              if (!s) return;
+              const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+              if (!m) return alert("格式不对，请用 YYYY-MM-DD");
+              const d = new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
+              const lines = linesFromTasks(visibleTasks);
+              if (!lines.length) return alert("今天没有可写入的任务。");
+              writePlanForDate(d, { must: lines.join("\n") });
+            }}
+          >
+            写入“指定日计划…”
+          </button>
         </div>
       </header>
 
@@ -587,6 +751,9 @@ function InnerApp(){
           <div>{doneCount}/{visibleTasks.length}（{prog}%）</div>
         </div>
         <div style={barWrap}><div style={{ ...barFill, width: `${prog}%` }} /></div>
+        <div style={{fontSize:12, color:"#666", marginTop:6}}>
+          精力槽：<b>上午高能 {ENERGY_PRESET.morningHigh}</b> ｜ <b>下午中能 {ENERGY_PRESET.afternoonMid}</b> ｜ <b>晚上低能 {ENERGY_PRESET.eveningLow}</b>
+        </div>
       </div>
 
       {/* 番茄钟 */}
@@ -595,26 +762,36 @@ function InnerApp(){
       {/* 任务清单（锁定=清单；解锁=编辑） */}
       <div style={card}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, flexWrap:"wrap" }}>
-          <h3 style={{ margin: 0 }}>✅ 今日任务（固定清单）</h3>
+          <h3 style={{ margin: 0 }}>✅ 今日任务（固定清单 + 目标/象限）</h3>
           {!locked && <button style={btnPrimary} onClick={addTask}>+ 新增任务</button>}
         </div>
 
         <div style={{ marginTop: 12 }}>
           {visibleTasks.map((t) => {
             const overdue = isOverdueNow(today, t);
+            const startHHMM = (t.fixedWindow||"").split("-")[0] || "";
+            const energy = startHHMM ? energyLevelAt(startHHMM) : "unknown";
+            const important = (t.priority||"In").startsWith("I");
+            const badEnergyForImportant = important && (energy==="low" || energy==="unknown");
+
+            const goalName = t.goalId ? ( (goals.find(g=>g.id===t.goalId)?.title) || "未知目标" ) : "";
             return (
               <div key={t.id} style={{...taskRow, ...(t.done? rowDone : null)}}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, width:"100%" }}>
                   <input type="checkbox" checked={!!t.done} onChange={() => toggleTask(t.id)} style={{ marginTop: 4 }} title="完成勾选" />
+
                   <div style={{ flex: 1 }}>
                     {locked ? (
                       <>
                         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 }}>
                           {t.fixedWindow && <span style={badgeTime}>{t.fixedWindow}</span>}
                           <span style={badge}>{t.section || "未分类"}</span>
+                          <span style={badge}>{PRIORITY_LABEL[t.priority||"In"]}</span>
+                          {goalName ? <span style={badge}>🎯 {goalName}</span> : null}
                           <span style={{...titleText, ...(t.done? titleDone : null)}}>{t.title || "未命名任务"}</span>
                           {t.output && <span style={chip}>产出：{t.output}</span>}
                           {overdue && <span style={overdueTag}>已过时</span>}
+                          {badEnergyForImportant && <span style={warnTag}>⚠ 重要任务建议放到高能时段</span>}
                         </div>
                         <textarea
                           placeholder="备注/产出链接/要点…"
@@ -654,6 +831,25 @@ function InnerApp(){
                             <option>微博维护</option>
                           </select>
 
+                          <select
+                            value={t.priority||"In"}
+                            onChange={(e)=>updateTask(t.id, { priority: e.target.value })}
+                            style={select}
+                            title="四象限"
+                          >
+                            {PRIORITY_ORDER.map(k => <option key={k} value={k}>{PRIORITY_LABEL[k]}</option>)}
+                          </select>
+
+                          <select
+                            value={t.goalId||""}
+                            onChange={(e)=>updateTask(t.id, { goalId: e.target.value })}
+                            style={select}
+                            title="绑定目标"
+                          >
+                            <option value="">未绑定目标</option>
+                            {goals.map(g => <option key={g.id} value={g.id}>{g.title}</option>)}
+                          </select>
+
                           <input
                             style={textInput}
                             value={t.fixedWindow || ""}
@@ -690,8 +886,8 @@ function InnerApp(){
         </div>
       </div>
 
-      {/* 统计面板（含导出） */}
-      <StatsPanel today={today} />
+      {/* 统计面板（含导出、目标/象限） */}
+      <StatsPanel today={today} goals={goals} />
 
       {/* 计划面板（含注入今日清单） */}
       <PlannerPanel today={today} onInject={injectPlanItems} />
@@ -700,7 +896,7 @@ function InnerApp(){
       <div style={card}>
         <h3 style={{ marginTop: 0 }}>📝 今日复盘/杂记</h3>
         <textarea
-          placeholder="1）我完成了什么？ 2）进展/困难？ 3）明天最先做什么？"
+          placeholder="1）我完成了什么？ 2）哪些没完成，原因？ 3）明天最重要的一件事？"
           style={{ ...textarea, minHeight: 120 }}
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
@@ -708,7 +904,7 @@ function InnerApp(){
       </div>
 
       <footer style={{ fontSize: 12, color: "#999", textAlign: "center", margin: "24px 0" }}>
-        本地自动保存（localStorage，按日期区分）。锁定=清单展示；解锁=可编辑结构。对标学习为隔日任务（偶数日显示）。
+        本地自动保存（localStorage，按日期区分）。锁定=清单展示；解锁=可编辑结构。目标面板可为任务绑定长期方向；重要任务尽量放在高能时段。
       </footer>
     </div>
   );
@@ -732,13 +928,13 @@ const badgeTime = { fontFamily:"ui-monospace, SFMono-Regular, Menlo, Monaco, Con
 const badge = { fontSize:12, padding:"2px 6px", borderRadius:6, background:"#f1f5f9", color:"#0f172a", border:"1px solid #e5e7eb" };
 const titleText = { fontSize:15, fontWeight:600 };
 const chip = { fontSize:12, padding:"2px 6px", borderRadius:999, background:"#ecfeff", color:"#155e75", border:"1px solid #cffafe" };
-/* 完成/逾期样式 */
+/* 完成/逾期/提醒样式 */
 const rowDone = { opacity:.55 };
 const titleDone = { textDecoration:"line-through" };
 const overdueTag = { fontSize:12, padding:"2px 6px", borderRadius:6, background:"#fee2e2", color:"#991b1b", border:"1px solid #fecaca" };
+const warnTag = { fontSize:12, padding:"2px 6px", borderRadius:6, background:"#fff7ed", color:"#9a3412", border:"1px solid #fed7aa" };
 /* 统计卡片样式 */
 const statCard = { border:"1px solid #e5e7eb", borderRadius:12, padding:"12px 10px", background:"#fff", textAlign:"center" };
 const statNum  = { fontSize:24, fontWeight:700 };
 const statLabel= { fontSize:12, color:"#666" };
 const tabBtn = (active)=> ({ ...btn, background: active ? "#111" : "#fff", color: active ? "#fff" : "#111", borderColor: active ? "#111" : "#e5e7eb" });
-
