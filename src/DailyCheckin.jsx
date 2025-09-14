@@ -69,21 +69,7 @@ function download(filename, text, mime="text/plain;charset=utf-8") {
   URL.revokeObjectURL(url);
 }
 
-/* ------------------ 固定任务模板（你的清单） ------------------ */
-const DEFAULT_TASKS = [
-  { fixedWindow: "09:00-09:50", section: "核心产出", title: "写公众号草稿500字",            output: "500字草稿", priority: "IN" },
-  { fixedWindow: "10:00-10:25", section: "核心产出", title: "改稿+排版",                    output: "可发布文章", priority: "IN" },
-  { fixedWindow: "10:30-10:55", section: "热点捕捉", title: "浏览热榜，记录3条热点",         output: "热点清单",   priority: "nN" },
-  { fixedWindow: "11:00-11:15", section: "爆款拆解", title: "拆解1个爆款标题/开头",         output: "拆解笔记",   priority: "In" },
-  { fixedWindow: "11:15-11:30", section: "对标学习", title: "对比1个账号选题（隔日）",       output: "对标表",     altDays: true, priority: "In" },
-  { fixedWindow: "11:30-12:00", section: "股票",     title: "查盘+写下1条操作逻辑",          output: "投资日志",   priority: "IN" },
-  { fixedWindow: "14:00-14:30", section: "学习升级", title: "Coze/AI 短视频：做1个小案例",   output: "工作流/短视频demo", priority: "In" },
-  { fixedWindow: "14:30-15:00", section: "输入",     title: "阅读10页+写3条灵感",            output: "灵感清单",   priority: "In" },
-  { fixedWindow: "15:00-15:30", section: "扩展产出", title: "剪辑1条短视频（视频号/小红书）", output: "成片30秒",   priority: "IN" },
-  { fixedWindow: "15:30-15:45", section: "微博维护", title: "发1条+互动5条评论",             output: "微博动态",   priority: "nN" },
-];
-
-/* ------------------ 优先级枚举（四象限） ------------------ */
+/* ------------------ 优先级（四象限） ------------------ */
 const PRIORITY_LABEL = { IN:"重要&紧急", In:"重要不紧急", nN:"不重要但紧急", nn:"不重要不紧急" };
 const PRIORITY_ORDER = ["IN","In","nN","nn"];
 
@@ -102,7 +88,82 @@ const energyLevelAt = (hhmm) => {
   return "unknown";
 };
 
-/* ------------------ 番茄钟（北京时间/后台继续/提醒，强化 + 对外控制） ------------------ */
+/* ------------------ 从“昨日计划”生成任务的解析器 ------------------ */
+// 支持格式：
+// [09:00-09:25] 写公众号 → 500字草稿
+// 写公众号500字 -> 500字草稿
+// 写公众号500字（无时间段/无产出也可）
+const parsePlanLineToTask = (line) => {
+  let s = String(line || "").trim();
+  if (!s) return null;
+
+  let fixedWindow = "";
+  const mWin = s.match(/^\s*\[([0-2]\d:[0-5]\d-[0-2]\d:[0-5]\d)\]\s*/);
+  if (mWin) {
+    fixedWindow = mWin[1];
+    s = s.replace(mWin[0], "");
+  }
+
+  // 产出：优先识别中文箭头 “→”，其次 “->”
+  let title = s, output = "";
+  const arr = s.split("→");
+  if (arr.length >= 2) { title = arr[0].trim(); output = arr.slice(1).join("→").trim(); }
+  else {
+    const arr2 = s.split("->");
+    if (arr2.length >= 2) { title = arr2[0].trim(); output = arr2.slice(1).join("->").trim(); }
+  }
+
+  if (!title) title = "未命名任务";
+  return {
+    id: uid(),
+    title,
+    output,
+    section: "核心产出", // 默认模块，可后续在编辑模式改
+    fixedWindow,
+    minutes: spanMinutes(fixedWindow),
+    done: false,
+    remark: "",
+    priority: "In",   // 默认：重要不紧急
+    goalId: "",
+    altDays: false,
+  };
+};
+
+const tasksFromYesterdayPlan = (today) => {
+  const d = new Date(today);
+  d.setDate(d.getDate()-1);
+  const planKey = `plan-day-${dateKey(d)}`;
+  try {
+    const raw = localStorage.getItem(planKey);
+    if (!raw) return [];
+    const plan = JSON.parse(raw);
+    const lines = []
+      .concat(String(plan?.top3 || "").split(/\r?\n/))
+      .concat(String(plan?.must || "").split(/\r?\n/))
+      .map(t => t.trim())
+      .filter(Boolean);
+    const tasks = lines.map(parsePlanLineToTask).filter(Boolean);
+    // Top3 的前三条（如果存在）提升为“重要&紧急”
+    const top3Lines = String(plan?.top3 || "").split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    const top3Set = new Set(top3Lines.slice(0,3));
+    tasks.forEach(t => {
+      const normalized = t.title.replace(/\s/g,"");
+      for (const l of top3Set) {
+        if (normalized.includes(l.replace(/\s/g,""))) { t.priority = "IN"; break; }
+      }
+    });
+    // 按时间段排序（没有时间段的放后面）
+    const withTime = tasks.filter(t=>t.fixedWindow);
+    const noTime = tasks.filter(t=>!t.fixedWindow);
+    withTime.sort(compareByFixedWindow);
+    return [...withTime, ...noTime];
+  } catch (e) {
+    console.warn("parse yesterday plan failed:", e);
+    return [];
+  }
+};
+
+/* ------------------ 番茄钟（北京时间/后台继续/提醒 + 外部控制） ------------------ */
 function Pomodoro({ tasks, onAutoComplete, registerControls }) {
   const DUR = { "25/5": { focus: 25 * 60, rest: 5 * 60 }, "50/10": { focus: 50 * 60, rest: 10 * 60 } };
   const POMO_KEY = `pomo-state-${(new Date()).toISOString().slice(0,10)}`;
@@ -206,7 +267,7 @@ function Pomodoro({ tasks, onAutoComplete, registerControls }) {
 
   const _start = () => {
     if (running) return;
-    const dur = DUR[mode][phase];
+    const dur = (mode==="25/5"? 25*60:50*60);
     const nextEnd = Date.now() + dur * 1000;
     setEndAt(nextEnd);
     setRunning(true);
@@ -218,27 +279,26 @@ function Pomodoro({ tasks, onAutoComplete, registerControls }) {
   const reset = () => { setRunning(false); setEndAt(null); setPhase("focus"); setRemain(0); persist({ running: false, endAt: null, phase: "focus" }); };
   const changeMode = (v) => { if (running) pause(); setMode(v); persist({ mode: v }); };
 
-  // 对外暴露控制：startWithTask
-  useEffect(() => {
-    if (typeof registerControls === "function") {
-      registerControls({
-        startWithTask: (taskId) => {
-          setBindTaskId(taskId || "");
-          setPhase("focus");
-          persist({ bindTaskId: taskId || "", phase: "focus" });
-          _start();
-        }
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [registerControls, mode, phase, running, endAt]);
-
   useEffect(() => {
     const old = document.title;
     if (running && endAt) document.title = `(${String(Math.floor(remain/60)).padStart(2,"0")}:${String(remain%60).padStart(2,"0")}) 番茄钟`;
     else document.title = old.includes("番茄钟") ? "番茄钟" : old;
     return () => { document.title = old; };
   }, [running, endAt, remain]);
+
+  // 暴露外部控制：startWithTask
+  useEffect(() => {
+    if (typeof registerControls === "function") {
+      registerControls({
+        startWithTask: (taskId) => {
+          // 仅绑定记录；功能上倒计时与绑定解耦（任务完成时自动勾选）
+          localStorage.setItem("__pomo_bind__", taskId || "");
+          _start();
+        }
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registerControls, mode, phase, running, endAt]);
 
   const mm = String(Math.floor(remain / 60)).padStart(2, "0");
   const ss = String(remain % 60).padStart(2, "0");
@@ -256,16 +316,12 @@ function Pomodoro({ tasks, onAutoComplete, registerControls }) {
             <option value="focus">专注</option>
             <option value="rest">休息</option>
           </select>
-          <label style={{fontSize:12,color:"#444"}}><input type="checkbox" checked={soundOn} onChange={(e)=>{setSoundOn(e.target.checked); persist({soundOn:e.target.checked});}}/> 声音</label>
-          <label style={{fontSize:12,color:"#444"}}><input type="checkbox" checked={notifyOn} onChange={(e)=>{setNotifyOn(e.target.checked); persist({notifyOn:e.target.checked});}}/> 通知</label>
+          <span style={{fontSize:12,color:"#666"}}>现在北京时间：<b>{fmtBjNow}</b></span>
         </div>
       </div>
 
       <div style={{marginTop:6, color:"#666"}}>
-        现在北京时间：<b>{fmtBjNow}</b>
-      </div>
-      <div style={{marginTop:6, color:"#666"}}>
-        当前阶段：{phase==="focus"?"专注":"休息"}　|　结束(北京时间)：{fmtBeijing(endAt)}
+        当前阶段：{phase==="focus"?"专注":"休息"} | 结束(北京时间)：{fmtBeijing(endAt)}
       </div>
 
       <div style={{fontSize:48,fontWeight:700,margin:"12px 0"}}>{mm}:{ss}</div>
@@ -277,21 +333,17 @@ function Pomodoro({ tasks, onAutoComplete, registerControls }) {
           <button style={btn} onClick={pause}>暂停</button>
         )}
         <button style={btn} onClick={reset}>重置</button>
-        <select value={bindTaskId} onChange={(e)=>{ setBindTaskId(e.target.value); persist({bindTaskId:e.target.value}); }} style={{...select,minWidth:220}}>
-          <option value="">不绑定任务</option>
-          {tasks.map(t => <option key={t.id} value={t.id}>绑定：{(t.title||"").slice(0,24)}</option>)}
-        </select>
       </div>
 
       <div style={{fontSize:12,color:"#999",marginTop:8}}>
         · 计时用绝对时间戳，切到其他网页也不会慢；显示为<b>北京时间</b>。<br/>
-        · 阶段结束会提示（声音/通知/震动），若绑定任务则自动勾选完成。
+        · 阶段结束会提醒（声音/通知/震动），若已绑定任务则可配合自动勾选逻辑（上层 onAutoComplete）。
       </div>
     </div>
   );
 }
 
-/* ------------------ 读取全部天数据，用于统计/导出 ------------------ */
+/* ------------------ 读取全部天数据（统计/导出） ------------------ */
 function readAllDayEntries() {
   const entries = [];
   for (let i = 0; i < localStorage.length; i++) {
@@ -329,7 +381,7 @@ function GoalsPanel({ goals, setGoals }) {
     <div style={card}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
         <h3 style={{margin:0}}>🎯 目标（OKR/年度方向）</h3>
-        <div style={{fontSize:12,color:"#666"}}>可在任务中绑定到具体目标，统计会显示每个目标的覆盖率</div>
+        <div style={{fontSize:12,color:"#666"}}>每日清单来自前一天的“日计划”，任务可绑定到目标</div>
       </div>
       <div style={{display:"grid", gap:10, marginTop:10}}>
         <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
@@ -355,16 +407,11 @@ function GoalsPanel({ goals, setGoals }) {
   );
 }
 
-/* ------------------ 小型 7 日趋势图（SVG，无依赖） ------------------ */
+/* ------------------ 7日趋势（无依赖） ------------------ */
 function Trend7Days({ today }) {
   const all = readAllDayEntries();
-  // 近7天数组（含今天），无数据的天计 0%
   const days = [];
-  for (let i=6;i>=0;i--) {
-    const d = new Date(today);
-    d.setDate(d.getDate()-i);
-    days.push(dateKey(d));
-  }
+  for (let i=6;i>=0;i--) { const d = new Date(today); d.setDate(d.getDate()-i); days.push(dateKey(d)); }
   const rates = days.map(dk => {
     const e = all.find(x=>x.date===dk);
     if (!e) return 0;
@@ -373,51 +420,33 @@ function Trend7Days({ today }) {
     const done = e.tasks.filter(t=>t.done).length;
     return Math.round(done*100/total);
   });
-
-  // 绘图尺寸
-  const W = 360, H = 80, P = 8;
-  const maxY = 100;
-  const xs = days.map((_,i)=> P + i*( (W-2*P)/(days.length-1) ));
+  const W=360,H=80,P=8,maxY=100;
+  const xs = days.map((_,i)=> P + i*((W-2*P)/(days.length-1)));
   const ys = rates.map(r => H - P - (r/maxY)*(H-2*P));
   const path = ys.map((y,i)=> (i===0?`M ${xs[i]},${y}`:`L ${xs[i]},${y}`)).join(" ");
-
   return (
     <div style={card}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <h3 style={{margin:0}}>📈 近7天完成率</h3>
-        <div style={{fontSize:12, color:"#666"}}>单位：%</div>
+        <h3 style={{margin:0}}>📈 近7天完成率</h3><div style={{fontSize:12,color:"#666"}}>单位：%</div>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="80" style={{marginTop:8}}>
-        {/* 网格线 */}
         {[0,25,50,75,100].map(v=>{
           const y = H - P - (v/maxY)*(H-2*P);
-          return <g key={v}>
-            <line x1={P} y1={y} x2={W-P} y2={y} stroke="#e5e7eb" strokeDasharray="4 4"/>
-            <text x={W-P+2} y={y+3} fontSize="10" fill="#94a3b8">{v}</text>
-          </g>;
+          return <g key={v}><line x1={P} y1={y} x2={W-P} y2={y} stroke="#e5e7eb" strokeDasharray="4 4"/>
+          <text x={W-P+2} y={y+3} fontSize="10" fill="#94a3b8">{v}</text></g>;
         })}
-        {/* 折线 & 面 */}
         <path d={path} fill="none" stroke="#3b82f6" strokeWidth="2"/>
-        <polyline points={ys.map((y,i)=>`${xs[i]},${y}`).join(" ")} fill="none" />
-        {/* 圆点 */}
-        {xs.map((x,i)=>(
-          <g key={i}>
-            <circle cx={x} cy={ys[i]} r="3" fill="#3b82f6"/>
-            <text x={x} y={H-2} fontSize="9" fill="#64748b" textAnchor="middle">
-              {days[i].slice(5)}
-            </text>
-          </g>
-        ))}
+        {xs.map((x,i)=>(<g key={i}><circle cx={x} cy={ys[i]} r="3" fill="#3b82f6"/>
+        <text x={x} y={H-2} fontSize="9" fill="#64748b" textAnchor="middle">{days[i].slice(5)}</text></g>))}
       </svg>
     </div>
   );
 }
 
-/* ------------------ 统计面板（日/周/月/年） + 导出 + 目标/象限 ------------------ */
+/* ------------------ 统计面板 ------------------ */
 function StatsPanel({ today, goals }) {
   const [scope, setScope] = useState("day");
   const all = readAllDayEntries();
-
   const dayKeyStr = dateKey(today);
   const week = getISOWeek(today);
   const month = monthKey(today);
@@ -431,7 +460,6 @@ function StatsPanel({ today, goals }) {
   };
 
   const scoped = all.filter(e => inScope(e.date));
-
   let total=0, done=0, minutesDone=0;
   const bySection = {};
   const byPriority = { IN:0, In:0, nN:0, nn:0 };
@@ -452,31 +480,16 @@ function StatsPanel({ today, goals }) {
   });
   const rate = total ? Math.round(done*100/total) : 0;
 
-  const exportJSON = () => {
-    download(`stats-${scope}-${Date.now()}.json`, JSON.stringify(scoped, null, 2), "application/json");
-  };
+  const exportJSON = () => download(`stats-${scope}-${Date.now()}.json`, JSON.stringify(scoped, null, 2), "application/json");
   const exportCSV = () => {
     const rows = [["date","section","title","output","minutes","done","fixedWindow","remark","priority","goalId"]];
-    scoped.forEach(e=>{
-      e.tasks.forEach(t=>{
-        rows.push([
-          e.date,
-          (t.section||""),
-          (t.title||"").replace(/\n/g," "),
-          (t.output||"").replace(/\n/g," "),
-          (Number.isFinite(+t.minutes)? +t.minutes : spanMinutes(t.fixedWindow)),
-          t.done?1:0,
-          (t.fixedWindow||""),
-          (t.remark||"").replace(/\n/g," "),
-          (t.priority||""),
-          (t.goalId||""),
-        ]);
-      });
-    });
+    scoped.forEach(e=> e.tasks.forEach(t=>{
+      rows.push([e.date, (t.section||""), (t.title||"").replace(/\n/g," "), (t.output||"").replace(/\n/g," "),
+        (Number.isFinite(+t.minutes)? +t.minutes : spanMinutes(t.fixedWindow)), t.done?1:0, (t.fixedWindow||""),
+        (t.remark||"").replace(/\n/g," "), (t.priority||""), (t.goalId||"")]);
+    }));
     const csv = rows.map(r=>r.map(x=>{
-      const s = String(x??"");
-      if (s.includes(",") || s.includes('"')) return `"${s.replace(/"/g,'""')}"`;
-      return s;
+      const s = String(x??""); return (s.includes(",")||s.includes('"'))? `"${s.replace(/"/g,'""')}"` : s;
     }).join(",")).join("\n");
     download(`stats-${scope}-${Date.now()}.csv`, csv, "text/csv;charset=utf-8");
   };
@@ -487,10 +500,8 @@ function StatsPanel({ today, goals }) {
         <h3 style={{margin:0}}>📊 统计面板</h3>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           <select value={scope} onChange={e=>setScope(e.target.value)} style={select}>
-            <option value="day">今日</option>
-            <option value="week">本周</option>
-            <option value="month">本月</option>
-            <option value="year">今年</option>
+            <option value="day">今日</option><option value="week">本周</option>
+            <option value="month">本月</option><option value="year">今年</option>
           </select>
           <button style={btn} onClick={exportJSON}>导出JSON</button>
           <button style={btn} onClick={exportCSV}>导出CSV</button>
@@ -504,7 +515,6 @@ function StatsPanel({ today, goals }) {
         <div style={statCard}><div style={statNum}>{minutesDone}</div><div style={statLabel}>完成分钟</div></div>
       </div>
 
-      {/* 模块分布 */}
       <div style={{marginTop:16}}>
         <h4 style={{margin:"8px 0"}}>模块完成分布</h4>
         {Object.keys(bySection).length === 0 ? (
@@ -518,9 +528,8 @@ function StatsPanel({ today, goals }) {
         )}
       </div>
 
-      {/* 四象限分布 */}
       <div style={{marginTop:16}}>
-        <h4 style={{margin:"8px 0"}}>优先级（重要/紧急四象限）完成分布</h4>
+        <h4 style={{margin:"8px 0"}}>优先级（四象限）完成分布</h4>
         <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
           {PRIORITY_ORDER.map(k => (
             <span key={k} style={badge}>{PRIORITY_LABEL[k]}：{byPriority[k]||0}</span>
@@ -528,20 +537,18 @@ function StatsPanel({ today, goals }) {
         </div>
       </div>
 
-      {/* 目标覆盖率 */}
       <div style={{marginTop:16}}>
         <h4 style={{margin:"8px 0"}}>按目标的完成情况</h4>
-        {goals.length===0 ? <div style={{color:"#666"}}>暂无目标</div> : (
-          <div style={{display:"grid", gap:8}}>
-            {goals.map(g=>{
+        <div style={{display:"grid", gap:8}}>
+          {goals.length===0 ? <div style={{color:"#666"}}>暂无目标</div> :
+            goals.map(g=>{
               const n = byGoal[g.id]||0;
               return <div key={g.id} style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
                 <div><b>{g.title}</b> {g.desc? <span style={{color:"#666"}}>— {g.desc}</span> : null}</div>
                 <div style={{fontWeight:700}}>{n}</div>
               </div>;
             })}
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );
@@ -586,14 +593,12 @@ function PlannerPanel({ today, onInject }) {
         </div>
       </div>
 
-      <div style={{marginTop:12, color:"#666"}}>（Top3 对应今天早间第一优先；Must-do 是今天收工前必须落地）</div>
-
       <div style={{display:"grid", gap:12, marginTop:12}}>
         <div>
           <h4 style={{margin:"6px 0"}}>⭐ Top 3</h4>
           <textarea
             style={{...textarea, minHeight:80}}
-            placeholder="每行一条，回车换行\n例如：发布视频1条\n例如：复盘A/B测试"
+            placeholder="每行一条，回车换行；支持：[09:00-09:25] 写作 → 500字"
             value={data.top3}
             onChange={(e)=>setData(prev=>({...prev, top3:e.target.value}))}
           />
@@ -602,7 +607,7 @@ function PlannerPanel({ today, onInject }) {
           <h4 style={{margin:"6px 0"}}>✅ Must-do</h4>
           <textarea
             style={{...textarea, minHeight:80}}
-            placeholder="必须完成的事项（每行一条）"
+            placeholder="必须完成的事项；支持时间段与“→ 产出”语法"
             value={data.must}
             onChange={(e)=>setData(prev=>({...prev, must:e.target.value}))}
           />
@@ -621,7 +626,7 @@ function PlannerPanel({ today, onInject }) {
   );
 }
 
-/* ------------------ 主组件：清单 + 番茄钟 + 目标 + 统计 + 计划 + 趋势 + 完成动画 ------------------ */
+/* ------------------ 主组件 ------------------ */
 export default function DailyCheckin() {
   return (
     <ErrorBoundary>
@@ -641,81 +646,52 @@ function InnerApp(){
     try { return JSON.parse(localStorage.getItem("goals-v1")||"[]"); } catch { return []; }
   });
 
-  // 庆祝动画控制
-  const [celebrate, setCelebrate] = useState(false);
-  const showCelebrate = () => { setCelebrate(true); setTimeout(()=>setCelebrate(false), 1200); };
-
-  // 让任务行的“开始”按钮能调起番茄钟
   const pomoControlsRef = useRef({ startWithTask: (id)=>{} });
 
-  const normalizeTask = (t) => ({
-    id: t.id ?? uid(),
-    title: String(t.title ?? "未命名任务"),
-    minutes: Number.isFinite(+t.minutes) && +t.minutes > 0 ? +t.minutes : spanMinutes(t.fixedWindow),
-    section: t.section ?? "",
-    done: !!t.done,
-    remark: t.remark ?? "",
-    fixedWindow: t.fixedWindow ?? "",
-    output: t.output ?? "",
-    altDays: !!t.altDays,
-    priority: (t.priority && PRIORITY_LABEL[t.priority]) ? t.priority : "In",
-    goalId: t.goalId ?? "",
-  });
-
-  const shouldShowToday = (task, d) => {
-    if (!task.altDays) return true;
-    const day = d.getDate();
-    return day % 2 === 0;
-  };
-
+  // —— 初次加载：如果今天没有清单，则按“昨天的日计划”自动生成
   useEffect(() => {
     const raw = localStorage.getItem(storageKey);
     try {
       if (raw) {
         const parsed = JSON.parse(raw);
-        const base = Array.isArray(parsed?.tasks) ? parsed.tasks : DEFAULT_TASKS;
-        const miss = base.filter(t => !t?.fixedWindow).length;
-        const needMigrate = miss >= Math.ceil(base.length * 0.5);
-        const finalTasks = (needMigrate ? DEFAULT_TASKS : base).map(normalizeTask);
-        setTasks(finalTasks);
+        setTasks(Array.isArray(parsed?.tasks) ? parsed.tasks : []);
         setNotes(typeof parsed?.notes === "string" ? parsed.notes : "");
-        if (needMigrate) localStorage.setItem(storageKey, JSON.stringify({ tasks: finalTasks, notes: parsed?.notes || "" }));
-        return;
+        // 若有清单则直接用（不覆盖）
+        if (Array.isArray(parsed?.tasks) && parsed.tasks.length > 0) return;
       }
     } catch (e) { console.warn("Parse local data failed:", e); }
-    setTasks(DEFAULT_TASKS.map(normalizeTask));
-    setNotes("");
-  }, [storageKey]);
 
+    // 自动生成（仅当今天没有清单时）
+    const gen = tasksFromYesterdayPlan(today);
+    setTasks(gen);
+    setNotes("");
+    localStorage.setItem(storageKey, JSON.stringify({ tasks: gen, notes: "" }));
+  }, [storageKey, today]);
+
+  // 保存
   useEffect(() => {
     try { localStorage.setItem(storageKey, JSON.stringify({ tasks, notes })); } catch (e) { console.warn("Save failed:", e); }
   }, [tasks, notes, storageKey]);
 
-  const visibleTasks = [...tasks].filter(t => shouldShowToday(t, today)).sort(compareByFixedWindow);
+  const visibleTasks = [...tasks].sort(compareByFixedWindow);
   const doneCount = visibleTasks.filter(t=>t.done).length;
   const prog = visibleTasks.length ? Math.round(doneCount*100/visibleTasks.length) : 0;
 
-  const toggleTask   = (id) => setTasks(arr => arr.map(t => {
-    if (t.id===id) {
-      const nowDone = !t.done;
-      if (nowDone) showCelebrate();
-      return {...t, done: nowDone};
-    }
-    return t;
-  }));
+  // 行为
+  const toggleTask   = (id) => setTasks(arr => arr.map(t => t.id===id ? {...t, done:!t.done} : t));
   const autoComplete = (id) => setTasks(arr => arr.map(t => t.id===id ? ({...t, done:true}) : t));
-  const addTask      = () => setTasks(arr => [...arr, normalizeTask({ title:"自定义任务", section:"核心产出", fixedWindow:"", output:"", done:false, remark:"" })]);
+  const addTask      = () => setTasks(arr => [...arr, { id:uid(), title:"自定义任务", section:"核心产出", fixedWindow:"", output:"", minutes:25, done:false, remark:"", priority:"In", goalId:"" }]);
   const removeTask   = (id) => setTasks(arr => arr.filter(t => t.id!==id));
-  const updateTask   = (id, patch) => setTasks(arr => arr.map(t => t.id===id ? normalizeTask({ ...t, ...patch }) : t));
+  const updateTask   = (id, patch) => setTasks(arr => arr.map(t => t.id===id ? ({ ...t, ...patch, minutes: Number.isFinite(+patch?.minutes) ? +patch.minutes : (t.fixedWindow? spanMinutes(t.fixedWindow) : (t.minutes||25)) }) : t));
   const shiftDay     = (delta) => { const d = new Date(today); d.setDate(d.getDate()+delta); setToday(d); };
 
+  // 计划注入：根据文本行追加任务（去重：同标题不重复）
   const injectPlanItems = (lines=[]) => {
-    const titles = new Set(tasks.map(t => t.title.trim()));
+    const titles = new Set(tasks.map(t => String(t.title||"").trim()));
     const newOnes = lines
-      .map(title => title.trim())
+      .map(parsePlanLineToTask)
       .filter(Boolean)
-      .filter(t => !titles.has(t))
-      .map(title => normalizeTask({ title, section:"核心产出", fixedWindow:"", output:"" }));
+      .filter(t => !titles.has(t.title.trim()));
     if (newOnes.length === 0) return alert("没有可注入的新任务（可能都已存在）");
     const merged = [...tasks, ...newOnes];
     setTasks(merged);
@@ -723,24 +699,12 @@ function InnerApp(){
     alert(`已注入 ${newOnes.length} 条到今日清单`);
   };
 
-  const linesFromTasks = (arr=[]) => {
-    return arr.map(t => {
-      const time = t.fixedWindow ? `[${t.fixedWindow}] ` : "";
-      const out  = t.output ? ` → ${t.output}` : "";
-      return `${time}${t.title}${out}`;
-    });
-  };
-  const writePlanForDate = (dateObj, { top3="", must="", notes="" }) => {
-    const key = `plan-day-${dateKey(dateObj)}`;
-    try {
-      const old = JSON.parse(localStorage.getItem(key) || "{}");
-      const next = { top3: old.top3?.trim()? old.top3 : top3, must, notes: typeof old.notes==="string"? old.notes : notes };
-      localStorage.setItem(key, JSON.stringify(next));
-      alert(`已写入到【${dateKey(dateObj)}】的日计划（must）。`);
-    } catch (e) {
-      console.warn("writePlanForDate failed:", e);
-      alert("写入计划失败，请重试");
-    }
+  // 从昨日计划重建（手动触发）
+  const rebuildFromYesterday = () => {
+    const gen = tasksFromYesterdayPlan(today);
+    setTasks(gen);
+    localStorage.setItem(storageKey, JSON.stringify({ tasks: gen, notes }));
+    alert(`已根据【昨天的日计划】重建今日清单：${gen.length} 条`);
   };
 
   return (
@@ -758,47 +722,15 @@ function InnerApp(){
           <button style={btn} onClick={() => setToday(new Date())}>回到今天</button>
           <button style={btn} onClick={() => shiftDay(1)}>后一天 →</button>
           <button style={btn} onClick={() => setLocked(l => !l)}>{locked ? "解锁编辑" : "锁定"}</button>
+          <button style={btn} onClick={rebuildFromYesterday}>从昨日计划重建今日清单</button>
           <button
             style={btn}
             onClick={() => {
-              const ok = confirm("确定将【今日清单】重置为模板？（备注与勾选将清空，仅当日生效）");
+              const ok = confirm("确定清空【今日清单】吗？（仅清空当天，不影响计划）");
               if (!ok) return;
-              const fresh = DEFAULT_TASKS.map(normalizeTask);
-              setTasks(fresh);
-              localStorage.setItem(storageKey, JSON.stringify({ tasks: fresh, notes: "" }));
+              setTasks([]); localStorage.setItem(storageKey, JSON.stringify({ tasks: [], notes }));
             }}
-          >
-            重置今日清单
-          </button>
-
-          {/* 快捷：写入昨天/指定日计划 */}
-          <button
-            style={btn}
-            onClick={() => {
-              const d = new Date(today);
-              d.setDate(d.getDate() - 1);
-              const lines = linesFromTasks(visibleTasks);
-              if (!lines.length) return alert("今天没有可写入的任务。");
-              writePlanForDate(d, { must: lines.join("\n") });
-            }}
-          >
-            写入“昨天日计划”
-          </button>
-          <button
-            style={btn}
-            onClick={() => {
-              const s = prompt("写入到哪一天？（格式：YYYY-MM-DD）", dateKey(new Date()));
-              if (!s) return;
-              const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-              if (!m) return alert("格式不对，请用 YYYY-MM-DD");
-              const d = new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
-              const lines = linesFromTasks(visibleTasks);
-              if (!lines.length) return alert("今天没有可写入的任务。");
-              writePlanForDate(d, { must: lines.join("\n") });
-            }}
-          >
-            写入“指定日计划…”
-          </button>
+          >清空今日清单</button>
         </div>
       </header>
 
@@ -814,34 +746,33 @@ function InnerApp(){
         </div>
       </div>
 
-      {/* 番茄钟（暴露 startWithTask） */}
+      {/* 番茄钟 */}
       <Pomodoro
         tasks={visibleTasks}
         onAutoComplete={autoComplete}
-        registerControls={(c)=> (pomoControlsRef.current = c || pomoControlsRef.current)}
+        registerControls={(c)=>{}}
       />
 
-      {/* 任务清单（锁定=清单；解锁=编辑） */}
+      {/* 任务清单 */}
       <div style={card}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, flexWrap:"wrap" }}>
-          <h3 style={{ margin: 0 }}>✅ 今日任务（固定清单 + 目标/象限）</h3>
+          <h3 style={{ margin: 0 }}>✅ 今日任务（来自昨日计划）</h3>
           {!locked && <button style={btnPrimary} onClick={addTask}>+ 新增任务</button>}
         </div>
 
         <div style={{ marginTop: 12 }}>
+          {visibleTasks.length===0 && <div style={{color:"#666"}}>今天还没有任务。你可以在「计划面板」填写内容并“注入到今日清单”，或点击“从昨日计划重建”。</div>}
           {visibleTasks.map((t) => {
             const overdue = isOverdueNow(today, t);
             const startHHMM = (t.fixedWindow||"").split("-")[0] || "";
             const energy = startHHMM ? energyLevelAt(startHHMM) : "unknown";
             const important = (t.priority||"In").startsWith("I");
             const badEnergyForImportant = important && (energy==="low" || energy==="unknown");
-            const goalName = t.goalId ? ( (goals.find(g=>g.id===t.goalId)?.title) || "未知目标" ) : "";
 
             return (
               <div key={t.id} style={{...taskRow, ...(t.done? rowDone : null)}}>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 12, width:"100%" }}>
                   <input type="checkbox" checked={!!t.done} onChange={() => toggleTask(t.id)} style={{ marginTop: 4 }} title="完成勾选" />
-
                   <div style={{ flex: 1 }}>
                     {locked ? (
                       <>
@@ -849,26 +780,18 @@ function InnerApp(){
                           {t.fixedWindow && <span style={badgeTime}>{t.fixedWindow}</span>}
                           <span style={badge}>{t.section || "未分类"}</span>
                           <span style={badge}>{PRIORITY_LABEL[t.priority||"In"]}</span>
-                          {goalName ? <span style={badge}>🎯 {goalName}</span> : null}
                           <span style={{...titleText, ...(t.done? titleDone : null)}}>{t.title || "未命名任务"}</span>
                           {t.output && <span style={chip}>产出：{t.output}</span>}
                           {overdue && <span style={overdueTag}>已过时</span>}
                           {badEnergyForImportant && <span style={warnTag}>⚠ 重要任务建议放到高能时段</span>}
                         </div>
-                        <div style={{display:"flex", gap:8, flexWrap:"wrap", marginTop:6}}>
-                          <button
-                            style={btnPrimary}
-                            onClick={() => pomoControlsRef.current?.startWithTask?.(t.id)}
-                            title="绑定该任务并立即启动专注"
-                          >▶ 开始</button>
-                          <textarea
-                            placeholder="备注/产出链接/要点…"
-                            style={textarea}
-                            value={t.remark ?? ""}
-                            onChange={(e) => updateTask(t.id, { remark: e.target.value })}
-                            title="备注"
-                          />
-                        </div>
+                        <textarea
+                          placeholder="备注/产出链接/要点…"
+                          style={textarea}
+                          value={t.remark ?? ""}
+                          onChange={(e) => updateTask(t.id, { remark: e.target.value })}
+                          title="备注"
+                        />
                       </>
                     ) : (
                       <>
@@ -892,22 +815,11 @@ function InnerApp(){
                             {PRIORITY_ORDER.map(k => <option key={k} value={k}>{PRIORITY_LABEL[k]}</option>)}
                           </select>
 
-                          <select value={t.goalId||""} onChange={(e)=>updateTask(t.id, { goalId: e.target.value })} style={select} title="绑定目标">
-                            <option value="">未绑定目标</option>
-                            {goals.map(g => <option key={g.id} value={g.id}>{g.title}</option>)}
-                          </select>
-
-                          <input style={textInput} value={t.fixedWindow || ""} onChange={(e) => updateTask(t.id, { fixedWindow: e.target.value })} placeholder="时间段 如 09:00-09:25" title="时间段" />
+                          <input style={textInput} value={t.fixedWindow || ""} onChange={(e) => updateTask(t.id, { fixedWindow: e.target.value, minutes: spanMinutes(e.target.value) })} placeholder="时间段 如 09:00-09:25" title="时间段" />
 
                           <input style={{ ...textInput, maxWidth: 260 }} value={t.output ?? ""} onChange={(e) => updateTask(t.id, { output: e.target.value })} placeholder="产出（如：500字草稿 / 成片30秒）" title="产出" />
 
                           <button style={btnDanger} onClick={() => removeTask(t.id)}>删除</button>
-
-                          <button
-                            style={btnPrimary}
-                            onClick={() => pomoControlsRef.current?.startWithTask?.(t.id)}
-                            title="绑定该任务并立即启动专注"
-                          >▶ 开始</button>
                         </div>
 
                         <textarea
@@ -927,13 +839,9 @@ function InnerApp(){
         </div>
       </div>
 
-      {/* 统计面板（含导出、目标/象限） */}
+      {/* 统计面板 & 7日趋势 & 计划面板 */}
       <StatsPanel today={today} goals={goals} />
-
-      {/* 7 日趋势（无依赖） */}
       <Trend7Days today={today} />
-
-      {/* 计划面板（含注入今日清单） */}
       <PlannerPanel today={today} onInject={injectPlanItems} />
 
       {/* 复盘/杂记 */}
@@ -947,18 +855,8 @@ function InnerApp(){
         />
       </div>
 
-      {/* 完成庆祝动画 */}
-      {celebrate && (
-        <div style={celeWrap}>
-          <div style={celeToast}>🎉 任务 +1</div>
-          {Array.from({length:18}).map((_,i)=>(
-            <div key={i} style={confetti(i)} />
-          ))}
-        </div>
-      )}
-
       <footer style={{ fontSize: 12, color: "#999", textAlign: "center", margin: "24px 0" }}>
-        本地自动保存（localStorage，按日期区分）。锁定=清单展示；解锁=可编辑结构。目标面板可为任务绑定长期方向；重要任务尽量放在高能时段。
+        每日清单来源：默认从<b>昨天的「日计划」</b>自动生成（Top3 + Must）。也可在计划面板填写后注入到今日清单。
       </footer>
     </div>
   );
@@ -989,35 +887,3 @@ const statCard = { border:"1px solid #e5e7eb", borderRadius:12, padding:"12px 10
 const statNum  = { fontSize:24, fontWeight:700 };
 const statLabel= { fontSize:12, color:"#666" };
 const tabBtn = (active)=> ({ ...btn, background: active ? "#111" : "#fff", color: active ? "#fff" : "#111", borderColor: active ? "#111" : "#e5e7eb" });
-
-/* 完成动画样式 */
-const celeWrap = {
-  position:"fixed", inset:0, pointerEvents:"none",
-  display:"flex", alignItems:"center", justifyContent:"center"
-};
-const celeToast = {
-  background:"rgba(17,17,17,.9)", color:"#fff", padding:"8px 12px",
-  borderRadius:999, fontWeight:700, letterSpacing:.5, boxShadow:"0 4px 12px rgba(0,0,0,.25)"
-};
-const confetti = (i)=>({
-  position:"fixed",
-  left: `${Math.random()*100}%`,
-  top: "-10px",
-  width: "8px", height: "12px",
-  background: ["#22c55e","#3b82f6","#ef4444","#f59e0b","#a855f7","#10b981"][i%6],
-  transform:`rotate(${(Math.random()*60-30).toFixed(0)}deg)`,
-  animation: `fall${i} 1.1s ease-in forwards`,
-  boxShadow:"0 1px 2px rgba(0,0,0,.2)"
-});
-
-/* 动画 keyframes 注入（一次） */
-const styleEl = typeof document!=="undefined" ? document.getElementById("__cele__") : null;
-if (!styleEl && typeof document!=="undefined") {
-  const s = document.createElement("style"); s.id="__cele__";
-  let css = "";
-  for (let i=0;i<20;i++){
-    const endX = (Math.random()*60-30).toFixed(0);
-    css += `@keyframes fall${i}{0%{transform:translateY(-10px) rotate(0deg);}100%{transform:translate(${endX}vw, 100vh) rotate(720deg); opacity:.8}}`;
-  }
-  s.innerHTML = css; document.head.appendChild(s);
-}
